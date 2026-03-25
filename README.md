@@ -36,13 +36,13 @@ Current scope:
 ## Installation
 
 ```bash
-go get github.com/aric/tidb-clinic-client
+go get github.com/AricSu/tidb-clinic-client
 ```
 
 ## CLI Installation
 
 ```bash
-go install github.com/aric/tidb-clinic-client/cmd/clinic-client@latest
+go install github.com/AricSu/tidb-clinic-client/cmd/clinic-client@latest
 ```
 
 ## CLI Usage
@@ -99,7 +99,7 @@ make run-cli
 The package name is `clinicapi`, so consumers typically write:
 
 ```go
-import clinicapi "github.com/aric/tidb-clinic-client"
+import clinicapi "github.com/AricSu/tidb-clinic-client"
 ```
 
 ## Quick Start
@@ -112,7 +112,7 @@ import (
 	"log"
 	"time"
 
-	clinicapi "github.com/aric/tidb-clinic-client"
+	clinicapi "github.com/AricSu/tidb-clinic-client"
 )
 
 func main() {
@@ -304,8 +304,8 @@ CLINIC_CLOUD_TIMESTAMP=replace-me
 When developing another Go module against a local checkout of this repository:
 
 ```go
-require github.com/aric/tidb-clinic-client v0.0.0
-replace github.com/aric/tidb-clinic-client => ../tidb-clinic-client
+require github.com/AricSu/tidb-clinic-client v0.0.0
+replace github.com/AricSu/tidb-clinic-client => ../tidb-clinic-client
 ```
 
 ## Versioning
@@ -314,12 +314,3 @@ This repository is intended to have its own tags and changelog.
 
 Until the first tagged release, the API should be treated as pre-1.0.
 
-## Non-Goals
-
-This repository does not implement:
-
-- fetch planning
-- item selection policy
-- diagnosis or RCA logic
-- visualization or dashboards
-- cloud cluster discovery

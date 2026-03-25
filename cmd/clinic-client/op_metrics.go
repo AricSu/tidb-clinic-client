@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	clinicapi "github.com/aric/tidb-clinic-client"
+	clinicapi "github.com/AricSu/tidb-clinic-client"
 	"github.com/spf13/cobra"
 )
 

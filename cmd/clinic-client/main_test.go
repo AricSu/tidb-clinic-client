@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	clinicapi "github.com/aric/tidb-clinic-client"
+	clinicapi "github.com/AricSu/tidb-clinic-client"
 )
 
 func TestLoadConfigFromEnvRequiresAPIKeyAndClusterID(t *testing.T) {

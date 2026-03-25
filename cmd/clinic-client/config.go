@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	clinicapi "github.com/aric/tidb-clinic-client"
+	clinicapi "github.com/AricSu/tidb-clinic-client"
 )
 
 const (

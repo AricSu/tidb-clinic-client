@@ -1,4 +1,4 @@
-module github.com/aric/tidb-clinic-client
+module github.com/AricSu/tidb-clinic-client
 
 go 1.22
 
