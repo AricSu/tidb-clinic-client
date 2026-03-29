@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"time"
@@ -48,11 +47,6 @@ func runMetricsQueryRange(
 		return err
 	}
 
-	fmt.Fprintf(out, "query=%s\n", cfg.Query)
-	fmt.Fprintf(out, "window=%d..%d step=%s\n", cfg.Start, cfg.End, cfg.Step)
-	fmt.Fprintf(out, "result_type=%s partial=%t series=%d\n", result.ResultType, result.IsPartial, len(result.Series))
-	if len(result.Series) > 0 {
-		fmt.Fprintf(out, "first_series_labels=%v samples=%d\n", result.Series[0].Labels, len(result.Series[0].Values))
-	}
+	writeMetricQueryRangeSummary(out, cfg.Query, cfg.Start, cfg.End, cfg.Step, result)
 	return nil
 }
