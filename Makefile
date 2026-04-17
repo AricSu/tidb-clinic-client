@@ -15,7 +15,7 @@ help:
 	@printf "  make vet        Run go vet\n"
 	@printf "  make build      Build the public CLI\n"
 	@printf "  make build-cli  Build the public CLI into $(BIN_DIR)/$(CLI_NAME)\n"
-	@printf "  make run-cli    Run clinic-client cloud metrics query-range via go run\n"
+	@printf "  make run-cli    Run clinic-client metrics query-range via go run\n"
 	@printf "  make clean      Remove local build artifacts\n"
 
 all: fmt test vet build-cli
@@ -36,7 +36,7 @@ build-cli:
 	$(GO) build -o $(BIN_DIR)/$(CLI_NAME) $(CLI_PKG)
 
 run-cli:
-	$(GO) run $(CLI_PKG) cloud metrics query-range
+	$(GO) run $(CLI_PKG) metrics query-range
 
 clean:
 	rm -rf $(BIN_DIR)
