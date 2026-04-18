@@ -165,6 +165,8 @@ fn build_regression_viewer_case(
             expected_top_events,
         } => {
             let request = AnalyzeRequest::Line {
+                expr: None,
+                expr_description: None,
                 policy: None,
                 series: series.clone(),
             };
@@ -207,6 +209,8 @@ fn build_regression_viewer_case(
             expected_top_events,
         } => {
             let request = AnalyzeRequest::Group {
+                expr: None,
+                expr_description: None,
                 policy: None,
                 groups: groups.clone(),
             };

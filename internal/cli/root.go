@@ -161,12 +161,29 @@ func configureCommand(cmd *cobra.Command, runID string) {
 		return
 	}
 	switch runID {
+	case "metrics.compile":
+		configureMetricsCompileCommand(cmd)
 	case "slowquery":
 		configureSlowQueryCommand(cmd)
 	case "cloud-events.search":
 		configureEventsCommand(cmd)
 	case "cloud-logs.search":
 		configureCloudLogsCommand(cmd)
+	}
+}
+
+func configureMetricsCompileCommand(cmd *cobra.Command) {
+	var flags metricsCompileFlagInputs
+	cmd.Flags().StringVar(&flags.ExprDescription, "expr-description", "", "Human-readable explanation for the expr")
+	originalRunE := cmd.RunE
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		flags.ExprDescriptionSet = cmd.Flags().Changed("expr-description")
+		restore := pushMetricsCompileFlagInputs(flags)
+		defer restore()
+		if originalRunE == nil {
+			return nil
+		}
+		return originalRunE(cmd, args)
 	}
 }
 
@@ -334,6 +351,12 @@ func metricsCompileHelp() string {
 		"Metrics query inputs:",
 		"- CLINIC_METRICS_QUERY",
 		"- CLINIC_RANGE_STEP",
+		"",
+		"Optional environment:",
+		"- CLINIC_METRICS_EXPR_DESCRIPTION",
+		"",
+		"Flags:",
+		"- --expr-description for a human-readable explanation of the expr",
 		"",
 		"Behavior:",
 		"- runs the same metrics range query as `metrics query`",

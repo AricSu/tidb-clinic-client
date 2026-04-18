@@ -286,6 +286,7 @@ type MetricsCompileQuery struct {
 	Step             string   `json:"step"`
 	Timeout          string   `json:"timeout,omitempty"`
 	MetricID         string   `json:"metricID,omitempty"`
+	ExprDescription  string   `json:"exprDescription,omitempty"`
 	LabelsOfInterest []string `json:"labelsOfInterest,omitempty"`
 	SourceRef        string   `json:"sourceRef,omitempty"`
 }

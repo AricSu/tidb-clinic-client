@@ -1146,7 +1146,7 @@ def build_case_view(index: int, case: dict[str, Any]) -> dict[str, Any]:
     failed_checks = len(missing) + len(unexpected)
 
     tags = derive_case_tags(case, canonical)
-    description = llm.get("description", "no llm output")
+    description = format_llm_summary(llm)
     highlight_labels = [item["label"] for item in highlighted]
     preview_svg = build_series_chart(
         series,
@@ -1269,7 +1269,7 @@ def render_overview_card(
         [
             "<section class='section-card detail-section'>",
             "<div class='section-label'>LLM Facts</div>",
-            f"<div class='summary-block'>{html.escape(llm.get('description', 'no llm output'))}</div>",
+            f"<div class='summary-block'>{html.escape(format_llm_summary(llm))}</div>",
             "<div class='mini-metric-grid'>",
             render_mini_metric("Passed", "yes" if case["passed"] else "no"),
             render_mini_metric("Failed checks", str(failed_checks)),
@@ -1292,6 +1292,21 @@ def render_overview_card(
             "</section>",
         ]
     )
+
+
+def format_llm_summary(llm: dict[str, Any]) -> str:
+    analyze_result = llm.get("analyze_result")
+    if isinstance(analyze_result, dict):
+        summary = analyze_result.get("summary")
+        if isinstance(summary, dict):
+            text = summary.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        return json.dumps(analyze_result, ensure_ascii=False, indent=2)
+    description = llm.get("description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    return "no llm output"
 
 
 def render_collection_card(collection_summary: dict[str, Any], series_summary: list[dict[str, Any]]) -> str:

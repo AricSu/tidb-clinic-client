@@ -1,4 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
+use serde_json::Value;
 use std::fmt;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -209,7 +210,7 @@ pub struct Event {
     pub score: f64,
     pub start_ts_secs: i64,
     pub end_ts_secs: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub timepoints_ts_secs: Vec<i64>,
     pub evidence: Vec<EvidenceItem>,
     pub impacted_members: usize,
@@ -240,38 +241,17 @@ pub struct CanonicalAnalysis {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LlmOutput {
-    pub schema_version: &'static str,
-    pub metric_id: String,
-    pub scope: Scope,
-    pub subject_id: String,
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expr_description: Option<String>,
+    pub analyze_result: Value,
 }
 
 impl LlmOutput {
     pub fn to_json_string(&self) -> String {
-        format!(
-            "{{\"schema_version\":\"{}\",\"metric_id\":\"{}\",\"scope\":\"{}\",\"subject_id\":\"{}\",\"description\":\"{}\"}}",
-            escape_json(self.schema_version),
-            escape_json(&self.metric_id),
-            escape_json(self.scope.as_str()),
-            escape_json(&self.subject_id),
-            escape_json(&self.description)
-        )
+        serde_json::to_string(self).expect("llm output should serialize")
     }
-}
-
-fn escape_json(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|ch| match ch {
-            '\\' => "\\\\".chars().collect::<Vec<_>>(),
-            '"' => "\\\"".chars().collect::<Vec<_>>(),
-            '\n' => "\\n".chars().collect::<Vec<_>>(),
-            '\r' => "\\r".chars().collect::<Vec<_>>(),
-            '\t' => "\\t".chars().collect::<Vec<_>>(),
-            _ => vec![ch],
-        })
-        .collect()
 }
 
 #[cfg(test)]

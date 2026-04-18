@@ -1025,11 +1025,11 @@ mod tests {
                 EventKind::Spike
             ]
         );
-        let output = project_output(&analyses[0]);
-        assert!(
-            output
-                .description
-                .contains("top_events=[sustained_high, regime_shift, spike]")
+        let output = project_output(&analyses[0], &crate::payload::LlmContext::default());
+        let decoded = &output.analyze_result;
+        assert_eq!(
+            decoded["top_events"],
+            serde_json::json!(["sustained_high", "regime_shift", "spike"])
         );
     }
 

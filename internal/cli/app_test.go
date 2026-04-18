@@ -71,6 +71,8 @@ func TestLoadConfigFromEnvRespectsOptionalQueryOverrides(t *testing.T) {
 			return "token", true
 		case "CLINIC_METRICS_QUERY":
 			return "sum(tidb_server_maxprocs)", true
+		case "CLINIC_METRICS_EXPR_DESCRIPTION":
+			return "maxprocs across tidb", true
 		case "CLINIC_RANGE_STEP":
 			return "30s", true
 		default:
@@ -85,6 +87,9 @@ func TestLoadConfigFromEnvRespectsOptionalQueryOverrides(t *testing.T) {
 	}
 	if cfg.Query != "sum(tidb_server_maxprocs)" {
 		t.Fatalf("unexpected query override: %q", cfg.Query)
+	}
+	if cfg.ExprDescription != "maxprocs across tidb" {
+		t.Fatalf("unexpected expr description override: %q", cfg.ExprDescription)
 	}
 	if cfg.Step != "30s" {
 		t.Fatalf("unexpected step override: %q", cfg.Step)

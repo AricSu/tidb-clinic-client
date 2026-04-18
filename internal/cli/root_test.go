@@ -79,6 +79,47 @@ func TestMetricsCompileCommandRoutesToInjectedHandler(t *testing.T) {
 	}
 }
 
+func TestMetricsCompileCommandAcceptsExprDescriptionFlag(t *testing.T) {
+	called := false
+	cmd := newRootCommandWithApp(App{
+		"metrics.compile": func() error {
+			called = true
+			return nil
+		},
+	})
+	cmd.SetArgs([]string{"metrics", "compile", "--expr-description", "P99 query latency"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected metrics compile handler to be called")
+	}
+}
+
+func TestMetricsCompileHelpShowsExprDescriptionFlag(t *testing.T) {
+	cmd := newRootCommandWithApp(App{})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"metrics", "compile", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	help := buf.String()
+	for _, expected := range []string{
+		"CLINIC_METRICS_EXPR_DESCRIPTION",
+		"--expr-description",
+		"human-readable explanation of the expr",
+	} {
+		if !strings.Contains(help, expected) {
+			t.Fatalf("expected help to include %q, got:\n%s", expected, help)
+		}
+	}
+}
+
 func TestSlowQueryCommandRoutesToInjectedHandler(t *testing.T) {
 	called := false
 	cmd := newRootCommandWithApp(App{

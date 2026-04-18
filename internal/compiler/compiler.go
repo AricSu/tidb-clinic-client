@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/AricSu/tidb-clinic-client/compiler-rs/bindings/go/pkg/compilerwasm"
 	"github.com/AricSu/tidb-clinic-client/internal/model"
@@ -18,9 +19,11 @@ const (
 )
 
 type AnalyzeRequest struct {
-	Scope  string          `json:"scope"`
-	Series []LogicalSeries `json:"series,omitempty"`
-	Groups []GroupInput    `json:"groups,omitempty"`
+	Scope           string          `json:"scope"`
+	Expr            string          `json:"expr,omitempty"`
+	ExprDescription string          `json:"expr_description,omitempty"`
+	Series          []LogicalSeries `json:"series,omitempty"`
+	Groups          []GroupInput    `json:"groups,omitempty"`
 }
 
 type TimeSeriesPoint struct {
@@ -61,10 +64,9 @@ type compilerCanonical struct {
 }
 
 type compilerLLM struct {
-	MetricID    string `json:"metric_id"`
-	Scope       string `json:"scope"`
-	SubjectID   string `json:"subject_id"`
-	Description string `json:"description"`
+	Expr            string          `json:"expr,omitempty"`
+	ExprDescription string          `json:"expr_description,omitempty"`
+	AnalyzeResult   json.RawMessage `json:"analyze_result"`
 }
 
 type compilerEvent struct {
@@ -95,11 +97,18 @@ func BuildAnalyzeRequest(query model.MetricsCompileQuery, result model.SeriesRes
 	series := finalizeSeries(drafts)
 	if groups, ok := autoGroupSeries(series); ok {
 		return AnalyzeRequest{
-			Scope:  scopeGroup,
-			Groups: groups,
+			Scope:           scopeGroup,
+			Expr:            strings.TrimSpace(query.Query),
+			ExprDescription: strings.TrimSpace(query.ExprDescription),
+			Groups:          groups,
 		}, nil
 	}
-	return AnalyzeRequest{Scope: scopeLine, Series: series}, nil
+	return AnalyzeRequest{
+		Scope:           scopeLine,
+		Expr:            strings.TrimSpace(query.Query),
+		ExprDescription: strings.TrimSpace(query.ExprDescription),
+		Series:          series,
+	}, nil
 }
 
 func CompileMetricQueryRange(ctx context.Context, query model.MetricsCompileQuery, result model.SeriesResult) ([]byte, error) {
@@ -162,7 +171,13 @@ func convertSeries(query model.MetricsCompileQuery, index int, item model.Series
 		return seriesDraft{}, false
 	}
 	labels := filterLabels(item.Labels, query.LabelsOfInterest)
-	metricID := firstNonEmpty(query.MetricID, item.Labels["__name__"], query.Query, fmt.Sprintf("series_%d", index+1))
+	metricID := firstNonEmpty(
+		query.MetricID,
+		item.Labels["__name__"],
+		extractMetricIDFromQuery(query.Query),
+		query.Query,
+		fmt.Sprintf("series_%d", index+1),
+	)
 	return seriesDraft{
 		MetricID: metricID,
 		Labels:   cloneStringMap(labels),
@@ -197,6 +212,8 @@ func finalizeSeries(drafts []seriesDraft) []LogicalSeries {
 		if len(indexes) > 1 {
 			if rendered := renderIdentity(common, ""); rendered != "" {
 				groupID = rendered
+			} else if fallback := fallbackGroupIdentity(drafts, indexes); fallback != "" {
+				groupID = fallback
 			}
 		} else {
 			common = nil
@@ -221,6 +238,45 @@ func finalizeSeries(drafts []seriesDraft) []LogicalSeries {
 		}
 	}
 	return out
+}
+
+func fallbackGroupIdentity(drafts []seriesDraft, indexes []int) string {
+	keys := sharedLabelKeys(drafts, indexes)
+	switch len(keys) {
+	case 0:
+		return "series group"
+	case 1:
+		return keys[0] + " group"
+	default:
+		return strings.Join(keys, "/") + " group"
+	}
+}
+
+func sharedLabelKeys(drafts []seriesDraft, indexes []int) []string {
+	if len(indexes) == 0 {
+		return nil
+	}
+	shared := make(map[string]struct{})
+	for key := range excludeReservedLabels(drafts[indexes[0]].Labels) {
+		shared[key] = struct{}{}
+	}
+	for _, idx := range indexes[1:] {
+		next := excludeReservedLabels(drafts[idx].Labels)
+		for key := range shared {
+			if strings.TrimSpace(next[key]) == "" {
+				delete(shared, key)
+			}
+		}
+		if len(shared) == 0 {
+			return nil
+		}
+	}
+	keys := make([]string, 0, len(shared))
+	for key := range shared {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func autoGroupSeries(series []LogicalSeries) ([]GroupInput, bool) {
@@ -506,13 +562,13 @@ func buildCompiledDigests(query model.MetricsCompileQuery, response compilerAnal
 	metricIDOverride := strings.TrimSpace(query.MetricID)
 	digests := make([]model.CompiledTimeseriesDigest, 0, len(response.Outputs))
 	for _, output := range response.Outputs {
-		scope := normalizedScope(output.Canonical.Scope, output.LLM.Scope)
-		metricID := firstNonEmpty(metricIDOverride, output.Canonical.MetricID, output.LLM.MetricID)
+		scope := normalizedScope(output.Canonical.Scope)
+		metricID := firstNonEmpty(metricIDOverride, output.Canonical.MetricID)
 		digest := model.CompiledTimeseriesDigest{
 			MetricID:  metricID,
 			Scope:     scope,
-			SubjectID: firstNonEmpty(output.Canonical.SubjectID, output.LLM.SubjectID),
-			Summary:   strings.TrimSpace(output.LLM.Description),
+			SubjectID: strings.TrimSpace(output.Canonical.SubjectID),
+			Summary:   llmAnalyzeResultSummary(output.LLM.AnalyzeResult),
 			State:     strings.TrimSpace(output.Canonical.State),
 			Trend:     strings.TrimSpace(output.Canonical.Trend),
 		}
@@ -536,6 +592,24 @@ func buildCompiledDigests(query model.MetricsCompileQuery, response compilerAnal
 		digests = append(digests, digest)
 	}
 	return digests
+}
+
+func llmAnalyzeResultSummary(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var decoded struct {
+		Summary struct {
+			Text string `json:"text"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		if text := strings.TrimSpace(decoded.Summary.Text); text != "" {
+			return text
+		}
+	}
+	return trimmed
 }
 
 func normalizedScope(values ...string) string {
@@ -595,4 +669,59 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func extractMetricIDFromQuery(query string) string {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return ""
+	}
+	const keyword = "keyword"
+	firstCandidate := ""
+	for idx := 0; idx < len(trimmed); {
+		r := rune(trimmed[idx])
+		if !isIdentifierStart(r) {
+			idx++
+			continue
+		}
+		start := idx
+		idx++
+		for idx < len(trimmed) && isIdentifierPart(rune(trimmed[idx])) {
+			idx++
+		}
+		token := trimmed[start:idx]
+		lower := strings.ToLower(token)
+		if promQLIdentifierClass(trimmed, idx, lower) == keyword {
+			continue
+		}
+		if firstCandidate == "" {
+			firstCandidate = token
+		}
+		if strings.Contains(token, "_") || strings.Contains(token, ":") {
+			return token
+		}
+	}
+	return firstCandidate
+}
+
+func promQLIdentifierClass(query string, end int, lower string) string {
+	switch lower {
+	case "by", "without", "on", "ignoring", "group_left", "group_right", "bool", "offset":
+		return "keyword"
+	}
+	for end < len(query) && unicode.IsSpace(rune(query[end])) {
+		end++
+	}
+	if end < len(query) && query[end] == '(' {
+		return "keyword"
+	}
+	return ""
+}
+
+func isIdentifierStart(r rune) bool {
+	return r == '_' || r == ':' || unicode.IsLetter(r)
+}
+
+func isIdentifierPart(r rune) bool {
+	return isIdentifierStart(r) || unicode.IsDigit(r)
 }

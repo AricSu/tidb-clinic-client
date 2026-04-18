@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use compiler_core::{CompilerPolicy, GroupInput, analyze_groups, analyze_lines, project_output};
+use compiler_core::{CompilerPolicy, GroupInput, LlmContext, analyze_groups, analyze_lines, project_output};
 use compiler_schema::{CanonicalAnalysis, EventKind, LlmOutput, LogicalSeries, Scope};
 
 use crate::regression::{RegressionFailure, RegressionReport, ScopeRegressionSummary};
@@ -17,10 +17,18 @@ use crate::regression::{RegressionFailure, RegressionReport, ScopeRegressionSumm
 pub enum AnalyzeRequest {
     Line {
         #[serde(default)]
+        expr: Option<String>,
+        #[serde(default)]
+        expr_description: Option<String>,
+        #[serde(default)]
         policy: Option<CompilerPolicy>,
         series: Vec<LogicalSeries>,
     },
     Group {
+        #[serde(default)]
+        expr: Option<String>,
+        #[serde(default)]
+        expr_description: Option<String>,
         #[serde(default)]
         policy: Option<CompilerPolicy>,
         groups: Vec<GroupInput>,
@@ -73,12 +81,13 @@ pub fn analyze_request(
     request: &AnalyzeRequest,
     default_policy: &CompilerPolicy,
 ) -> AnalyzeResponse {
+    let llm_context = llm_context_from_request(request);
     let analyses = match request {
-        AnalyzeRequest::Line { policy, series } => {
+        AnalyzeRequest::Line { policy, series, .. } => {
             let effective_policy = policy.clone().unwrap_or_else(|| default_policy.clone());
             analyze_lines(series, &effective_policy)
         }
-        AnalyzeRequest::Group { policy, groups } => {
+        AnalyzeRequest::Group { policy, groups, .. } => {
             let effective_policy = policy.clone().unwrap_or_else(|| default_policy.clone());
             analyze_groups(groups, &effective_policy)
         }
@@ -88,10 +97,28 @@ pub fn analyze_request(
         outputs: analyses
             .into_iter()
             .map(|canonical| AnalyzeRecord {
-                llm: project_output(&canonical),
+                llm: project_output(&canonical, &llm_context),
                 canonical,
             })
             .collect(),
+    }
+}
+
+fn llm_context_from_request(request: &AnalyzeRequest) -> LlmContext {
+    match request {
+        AnalyzeRequest::Line {
+            expr,
+            expr_description,
+            ..
+        }
+        | AnalyzeRequest::Group {
+            expr,
+            expr_description,
+            ..
+        } => LlmContext {
+            expr: expr.clone(),
+            expr_description: expr_description.clone(),
+        },
     }
 }
 

@@ -134,6 +134,24 @@ func TestLoadCloudLogsConfigRejectsMixedInputs(t *testing.T) {
 	}
 }
 
+func TestLoadMetricsCompileConfigUsesFlagInputs(t *testing.T) {
+	restore := pushMetricsCompileFlagInputs(metricsCompileFlagInputs{
+		ExprDescription:    "P99 query latency for each TiDB instance",
+		ExprDescriptionSet: true,
+	})
+	defer restore()
+
+	cfg, err := loadMetricsCompileConfig(testSlowQueryLookup(
+		"CLINIC_METRICS_EXPR_DESCRIPTION", "from-env",
+	), testNow)
+	if err != nil {
+		t.Fatalf("loadMetricsCompileConfig failed: %v", err)
+	}
+	if cfg.ExprDescription != "P99 query latency for each TiDB instance" {
+		t.Fatalf("unexpected expr description: %q", cfg.ExprDescription)
+	}
+}
+
 func TestLoadSlowQueryConfigUsesSpecificEnvInputs(t *testing.T) {
 	cfg, err := loadSlowQueryConfig(testSlowQueryLookup(
 		"CLINIC_SLOWQUERY_DIGEST", "digest-1",

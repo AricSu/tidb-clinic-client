@@ -152,6 +152,7 @@ dependencies = [
  "linreg",
  "pelt",
  "serde",
+ "serde_json",
  "statrs",
  "time",
 ]

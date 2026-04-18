@@ -23,6 +23,7 @@ type cliConfig struct {
 	OrgID                string
 	ClusterID            string
 	Query                string
+	ExprDescription      string
 	Start                int64
 	End                  int64
 	Step                 string
@@ -66,6 +67,7 @@ func loadConfigFromEnv(lookup func(string) (string, bool), now func() time.Time)
 	if !ok {
 		query = defaultMetricsQuery
 	}
+	exprDescription, _ := optionalEnv(lookup, "CLINIC_METRICS_EXPR_DESCRIPTION")
 	step, ok := optionalEnv(lookup, "CLINIC_RANGE_STEP")
 	if !ok {
 		step = defaultStep
@@ -76,6 +78,7 @@ func loadConfigFromEnv(lookup func(string) (string, bool), now func() time.Time)
 		OrgID:                portalInput.orgID,
 		ClusterID:            clusterID,
 		Query:                query,
+		ExprDescription:      exprDescription,
 		Start:                start,
 		End:                  end,
 		Step:                 step,

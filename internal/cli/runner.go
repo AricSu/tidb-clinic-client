@@ -212,10 +212,11 @@ func runMetricsCompile(
 			return err
 		}
 		compiled, err := compiler.CompileMetricQueryRange(ctx, clinicapi.MetricsCompileQuery{
-			Query: cfg.Query,
-			Start: cfg.Start,
-			End:   cfg.End,
-			Step:  cfg.Step,
+			Query:           cfg.Query,
+			ExprDescription: cfg.ExprDescription,
+			Start:           cfg.Start,
+			End:             cfg.End,
+			Step:            cfg.Step,
 		}, result)
 		if err != nil {
 			return err

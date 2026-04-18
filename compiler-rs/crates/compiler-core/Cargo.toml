@@ -12,5 +12,6 @@ compiler-schema = { path = "../compiler-schema" }
 linreg = { workspace = true }
 pelt = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 statrs = { workspace = true }
 time = { workspace = true }
