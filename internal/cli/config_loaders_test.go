@@ -6,72 +6,222 @@ import (
 	"time"
 )
 
-func TestLoadCloudSlowQueryDetailConfigSupportsIDOnly(t *testing.T) {
-	cfg, err := loadCloudSlowQueryDetailConfig(testSlowQueryLookup(
-		"CLINIC_SLOWQUERY_ID", "slowquery-1",
-		"CLINIC_SLOWQUERY_DIGEST", "stale-digest",
-		"CLINIC_SLOWQUERY_CONNECTION_ID", "stale-connection",
-		"CLINIC_SLOWQUERY_TIMESTAMP", "1767089088",
+func TestLoadCloudEventListConfigUsesFilters(t *testing.T) {
+	cfg, err := loadCloudEventListConfig(testSlowQueryLookup(
+		"CLINIC_EVENT_NAME", "backup",
+		"CLINIC_EVENT_SEVERITY", "warning",
 	), testNow)
 	if err != nil {
-		t.Fatalf("loadCloudSlowQueryDetailConfig failed: %v", err)
+		t.Fatalf("loadCloudEventListConfig failed: %v", err)
 	}
-	if cfg.ID != "slowquery-1" {
-		t.Fatalf("unexpected id: %q", cfg.ID)
+	if cfg.Name != "backup" {
+		t.Fatalf("unexpected event name: %q", cfg.Name)
 	}
-	if cfg.Digest != "" || cfg.ConnectionID != "" || cfg.Timestamp != "" {
-		t.Fatalf("unexpected compatibility fields: %+v", cfg)
+	if cfg.Severity == nil || *cfg.Severity != 1 {
+		t.Fatalf("unexpected event severity: %v", cfg.Severity)
 	}
 }
 
-func TestLoadCloudSlowQueryDetailConfigSupportsSemanticTriple(t *testing.T) {
-	cfg, err := loadCloudSlowQueryDetailConfig(testSlowQueryLookup(
-		"CLINIC_SLOWQUERY_DIGEST", "digest-1",
-		"CLINIC_SLOWQUERY_CONNECTION_ID", "conn-1",
-		"CLINIC_SLOWQUERY_TIMESTAMP", "1767089088",
+func TestLoadCloudEventListConfigRejectsUnknownSeverity(t *testing.T) {
+	_, err := loadCloudEventListConfig(testSlowQueryLookup(
+		"CLINIC_EVENT_SEVERITY", "fatal",
 	), testNow)
-	if err != nil {
-		t.Fatalf("loadCloudSlowQueryDetailConfig failed: %v", err)
-	}
-	if cfg.Digest != "digest-1" || cfg.ConnectionID != "conn-1" || cfg.Timestamp != "1767089088" {
-		t.Fatalf("unexpected config: %+v", cfg)
-	}
-}
-
-func TestLoadCloudSlowQueryDetailConfigRejectsMissingDetailLocator(t *testing.T) {
-	_, err := loadCloudSlowQueryDetailConfig(testSlowQueryLookup(), testNow)
 	if err == nil {
 		t.Fatalf("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "CLINIC_SLOWQUERY_ID") {
+	if !strings.Contains(err.Error(), "CLINIC_EVENT_SEVERITY") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestLoadCloudSlowQueryListConfigUsesSharedRangeInputs(t *testing.T) {
-	cfg, err := loadCloudSlowQueryListConfig(testSlowQueryLookup(
-		"CLINIC_SLOWQUERY_DIGEST", "digest-2",
-		"CLINIC_SLOWQUERY_ORDER_BY", "query_time",
-		"CLINIC_LIMIT", "20",
+func TestLoadCloudEventListConfigUsesActiveFlagInputs(t *testing.T) {
+	restore := pushEventFlagInputs(eventFlagInputs{
+		Name:        "%backup%",
+		NameSet:     true,
+		Severity:    "critical",
+		SeveritySet: true,
+	})
+	defer restore()
+
+	cfg, err := loadCloudEventListConfig(testSlowQueryLookup(
+		"CLINIC_EVENT_NAME", "from-env",
+		"CLINIC_EVENT_SEVERITY", "warning",
+	), testNow)
+	if err != nil {
+		t.Fatalf("loadCloudEventListConfig failed: %v", err)
+	}
+	if cfg.Name != "%backup%" {
+		t.Fatalf("unexpected event name: %q", cfg.Name)
+	}
+	if cfg.Severity == nil || *cfg.Severity != 3 {
+		t.Fatalf("unexpected event severity: %v", cfg.Severity)
+	}
+}
+
+func TestLoadCloudLogsConfigUsesQueryFlagInputs(t *testing.T) {
+	restore := pushCloudLogsFlagInputs(cloudLogsFlagInputs{
+		Query:        `{container="tidb"} |= "ERROR"`,
+		QuerySet:     true,
+		Limit:        25,
+		LimitSet:     true,
+		Direction:    "forward",
+		DirectionSet: true,
+	})
+	defer restore()
+
+	cfg, err := loadCloudLogsConfig(testSlowQueryLookup(
+		"CLINIC_LOKI_QUERY", "from-env",
+		"CLINIC_LOKI_LIMIT", "10",
+		"CLINIC_LOKI_DIRECTION", "backward",
+	), testNow)
+	if err != nil {
+		t.Fatalf("loadCloudLogsConfig failed: %v", err)
+	}
+	if cfg.Mode != cloudLogsModeQueryRange {
+		t.Fatalf("unexpected mode: %q", cfg.Mode)
+	}
+	if cfg.Query != `{container="tidb"} |= "ERROR"` || cfg.Limit != 25 || cfg.Direction != "forward" {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestLoadCloudLogsConfigUsesLabelFlagInputs(t *testing.T) {
+	restore := pushCloudLogsFlagInputs(cloudLogsFlagInputs{
+		LabelName:    "container",
+		LabelNameSet: true,
+	})
+	defer restore()
+
+	cfg, err := loadCloudLogsConfig(testSlowQueryLookup(
+		"CLINIC_LOKI_LABEL", "instance",
+	), testNow)
+	if err != nil {
+		t.Fatalf("loadCloudLogsConfig failed: %v", err)
+	}
+	if cfg.Mode != cloudLogsModeLabelValues {
+		t.Fatalf("unexpected mode: %q", cfg.Mode)
+	}
+	if cfg.LabelName != "container" {
+		t.Fatalf("unexpected label name: %q", cfg.LabelName)
+	}
+}
+
+func TestLoadCloudLogsConfigDefaultsToLabels(t *testing.T) {
+	cfg, err := loadCloudLogsConfig(testSlowQueryLookup(), testNow)
+	if err != nil {
+		t.Fatalf("loadCloudLogsConfig failed: %v", err)
+	}
+	if cfg.Mode != cloudLogsModeLabels {
+		t.Fatalf("unexpected mode: %q", cfg.Mode)
+	}
+}
+
+func TestLoadCloudLogsConfigRejectsMixedInputs(t *testing.T) {
+	restore := pushCloudLogsFlagInputs(cloudLogsFlagInputs{
+		Query:        `{container="tidb"}`,
+		QuerySet:     true,
+		LabelName:    "container",
+		LabelNameSet: true,
+	})
+	defer restore()
+
+	_, err := loadCloudLogsConfig(testSlowQueryLookup(), testNow)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "cannot combine") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadSlowQueryConfigUsesSpecificEnvInputs(t *testing.T) {
+	cfg, err := loadSlowQueryConfig(testSlowQueryLookup(
+		"CLINIC_SLOWQUERY_DIGEST", "digest-1",
+		"CLINIC_SLOWQUERY_ORDER_BY", "queryTime",
+		"CLINIC_SLOWQUERY_LIMIT", "20",
+		"CLINIC_SLOWQUERY_DESC", "true",
+		"CLINIC_SLOWQUERY_FIELDS", "query,timestamp",
+	), testNow)
+	if err != nil {
+		t.Fatalf("loadSlowQueryConfig failed: %v", err)
+	}
+	if cfg.Digest != "digest-1" || cfg.OrderBy != "queryTime" || cfg.Limit != 20 || !cfg.Desc {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+	if got := strings.Join(cfg.Fields, ","); got != "query,timestamp" {
+		t.Fatalf("unexpected fields: %+v", cfg.Fields)
+	}
+}
+
+func TestLoadSlowQueryConfigUsesSearchDefaultsWhenInputsMissing(t *testing.T) {
+	cfg, err := loadSlowQueryConfig(testSlowQueryLookup(), testNow)
+	if err != nil {
+		t.Fatalf("loadSlowQueryConfig failed: %v", err)
+	}
+	if cfg.OrderBy != "query_time" || cfg.Limit != 100 || cfg.Desc {
+		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+}
+
+func TestLoadSlowQueryConfigFallsBackToLegacyEnvInputs(t *testing.T) {
+	cfg, err := loadSlowQueryConfig(testSlowQueryLookup(
+		"CLINIC_LIMIT", "15",
 		"CLINIC_DESC", "true",
 	), testNow)
 	if err != nil {
-		t.Fatalf("loadCloudSlowQueryListConfig failed: %v", err)
+		t.Fatalf("loadSlowQueryConfig failed: %v", err)
 	}
-	if cfg.Start != "1772776800" || cfg.End != "1772777400" {
-		t.Fatalf("unexpected range: start=%s end=%s", cfg.Start, cfg.End)
-	}
-	if cfg.Digest != "digest-2" || cfg.OrderBy != "query_time" || cfg.Limit != 20 || !cfg.Desc {
+	if cfg.Limit != 15 || !cfg.Desc {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestLoadSlowQueryConfigUsesFlagInputs(t *testing.T) {
+	restore := pushSlowQueryFlagInputs(slowQueryFlagInputs{
+		Digest:     "digest-2",
+		DigestSet:  true,
+		OrderBy:    "execCount",
+		OrderBySet: true,
+		Limit:      5,
+		LimitSet:   true,
+		Desc:       true,
+		DescSet:    true,
+		Fields:     "query,connection_id",
+		FieldsSet:  true,
+	})
+	defer restore()
+
+	cfg, err := loadSlowQueryConfig(testSlowQueryLookup(
+		"CLINIC_SLOWQUERY_ORDER_BY", "queryTime",
+		"CLINIC_SLOWQUERY_LIMIT", "20",
+	), testNow)
+	if err != nil {
+		t.Fatalf("loadSlowQueryConfig failed: %v", err)
+	}
+	if cfg.Digest != "digest-2" || cfg.OrderBy != "execCount" || cfg.Limit != 5 || !cfg.Desc {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+	if got := strings.Join(cfg.Fields, ","); got != "query,connection_id" {
+		t.Fatalf("unexpected fields: %+v", cfg.Fields)
+	}
+}
+
+func TestLoadSlowQueryConfigRejectsInvalidLimit(t *testing.T) {
+	_, err := loadSlowQueryConfig(testSlowQueryLookup(
+		"CLINIC_SLOWQUERY_LIMIT", "0",
+	), testNow)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "CLINIC_SLOWQUERY_LIMIT") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func testSlowQueryLookup(values ...string) func(string) (string, bool) {
 	entries := map[string]string{
-		"CLINIC_API_KEY":     "token",
-		"CLINIC_CLUSTER_ID":  "cluster-9",
-		"CLINIC_RANGE_START": "1772776800",
-		"CLINIC_RANGE_END":   "1772777400",
+		"CLINIC_API_KEY":    "token",
+		"CLINIC_PORTAL_URL": "https://clinic.pingcap.com/portal/#/orgs/1372813089196930348/clusters/7372714695339837431?from=1772776800&to=1772777400",
 	}
 	for i := 0; i+1 < len(values); i += 2 {
 		entries[values[i]] = values[i+1]

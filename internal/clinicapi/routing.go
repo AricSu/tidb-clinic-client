@@ -12,22 +12,17 @@ import (
 const (
 	clusterLookupPath        = apiV1Prefix + "/dashboard/clusters"
 	metricsEndpoint          = apiV1Prefix + "/data/metrics"
-	slowQueriesEndpoint      = apiV1Prefix + "/data/slowqueries"
-	logsEndpoint             = apiV1Prefix + "/data/logs"
-	configEndpoint           = apiV1Prefix + "/data/config"
-	dataProxyQueryPath       = "/data-proxy/query"
-	dataProxySchemaPath      = "/data-proxy/schema"
+	slowQueriesSharedPath    = apiV1Prefix + "/data/slowqueries"
+	dataProxyMetricsPrefix   = "/data-proxy/metrics"
 	lokiEndpointPrefix       = "/data-proxy/loki"
 	orgDetailPattern         = apiV1Prefix + "/orgs/{orgID}"
 	catalogEndpointPattern   = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/data"
 	catalogDataStatusPattern = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/data_status"
 	catalogRebuildPattern    = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/rebuild"
+	catalogDownloadPattern   = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/download/{itemID}"
+	slowQueriesPattern       = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/slowqueries"
 	clusterDetailPattern     = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}"
-	collectedSlowQueriesPath = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/slowqueries"
-	collectedSlowQueryDetail = apiV1Prefix + "/orgs/{orgID}/clusters/{clusterID}/slowqueries/{slowQueryID}"
 	cloudEventsPattern       = apiV1Prefix + "/activityhub/applications/{orgID}/targets/{clusterID}/activities"
-	ngmTopSQLEndpoint        = ngmAPIV1Prefix + "/topsql/summary"
-	ngmTopSlowQueriesPath    = ngmAPIV1Prefix + "/slow_query/stats"
 	ngmSlowQueryListPath     = ngmAPIV1Prefix + "/slow_query/list"
 	ngmSlowQueryDetailPath   = ngmAPIV1Prefix + "/slow_query/detail"
 	ngmPlanReplayerListPath  = ngmAPIV1Prefix + "/plan_replayer/list"
@@ -72,6 +67,23 @@ func catalogRebuildEndpoint(orgID, clusterID string) string {
 		url.PathEscape(strings.TrimSpace(clusterID)),
 	)
 }
+func catalogDownloadEndpoint(orgID, clusterID, itemID string) string {
+	return fmt.Sprintf(
+		"%s/orgs/%s/clusters/%s/download/%s",
+		apiV1Prefix,
+		url.PathEscape(strings.TrimSpace(orgID)),
+		url.PathEscape(strings.TrimSpace(clusterID)),
+		url.PathEscape(strings.TrimSpace(itemID)),
+	)
+}
+func slowQueriesClusterEndpoint(orgID, clusterID string) string {
+	return fmt.Sprintf(
+		"%s/orgs/%s/clusters/%s/slowqueries",
+		apiV1Prefix,
+		url.PathEscape(strings.TrimSpace(orgID)),
+		url.PathEscape(strings.TrimSpace(clusterID)),
+	)
+}
 func clusterLookupEndpoint() string {
 	return clusterLookupPath
 }
@@ -81,23 +93,6 @@ func clusterDetailEndpoint(orgID, clusterID string) string {
 		apiV1Prefix,
 		url.PathEscape(strings.TrimSpace(orgID)),
 		url.PathEscape(strings.TrimSpace(clusterID)),
-	)
-}
-func collectedSlowQueriesEndpoint(orgID, clusterID string) string {
-	return fmt.Sprintf(
-		"%s/orgs/%s/clusters/%s/slowqueries",
-		apiV1Prefix,
-		url.PathEscape(strings.TrimSpace(orgID)),
-		url.PathEscape(strings.TrimSpace(clusterID)),
-	)
-}
-func collectedSlowQueryDetailEndpoint(orgID, clusterID, slowQueryID string) string {
-	return fmt.Sprintf(
-		"%s/orgs/%s/clusters/%s/slowqueries/%s",
-		apiV1Prefix,
-		url.PathEscape(strings.TrimSpace(orgID)),
-		url.PathEscape(strings.TrimSpace(clusterID)),
-		url.PathEscape(strings.TrimSpace(slowQueryID)),
 	)
 }
 func orgDetailEndpoint(orgID string) string {
@@ -113,15 +108,6 @@ func cloudEventsEndpoint(orgID, clusterID string) string {
 		apiV1Prefix,
 		url.PathEscape(strings.TrimSpace(orgID)),
 		url.PathEscape(strings.TrimSpace(clusterID)),
-	)
-}
-func cloudEventDetailEndpoint(orgID, clusterID, eventID string) string {
-	return fmt.Sprintf(
-		"%s/activityhub/applications/%s/targets/%s/activities/%s",
-		apiV1Prefix,
-		url.PathEscape(strings.TrimSpace(orgID)),
-		url.PathEscape(strings.TrimSpace(clusterID)),
-		url.PathEscape(strings.TrimSpace(eventID)),
 	)
 }
 func validateCloudTarget(endpoint string, target CloudTarget) error {

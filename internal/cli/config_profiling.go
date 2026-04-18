@@ -2,10 +2,6 @@ package cli
 
 import "time"
 
-type cloudProfilingDetailConfig struct {
-	Base      cliConfig
-	Timestamp int64
-}
 type cloudProfilingDownloadConfig struct {
 	Base        cliConfig
 	Timestamp   int64
@@ -16,21 +12,6 @@ type cloudProfilingDownloadConfig struct {
 	OutputPath  string
 }
 
-func loadCloudProfilingDetailConfig(lookup func(string) (string, bool), now func() time.Time) (cloudProfilingDetailConfig, error) {
-	base, err := loadConfigFromEnv(lookup, now)
-	if err != nil {
-		return cloudProfilingDetailConfig{}, err
-	}
-	tsRaw, err := requiredEnv(lookup, "CLINIC_PROFILE_TS")
-	if err != nil {
-		return cloudProfilingDetailConfig{}, err
-	}
-	ts, err := parseInt64Env("CLINIC_PROFILE_TS", tsRaw)
-	if err != nil {
-		return cloudProfilingDetailConfig{}, err
-	}
-	return cloudProfilingDetailConfig{Base: base, Timestamp: ts}, nil
-}
 func loadCloudProfilingDownloadConfig(lookup func(string) (string, bool), now func() time.Time) (cloudProfilingDownloadConfig, error) {
 	base, err := loadConfigFromEnv(lookup, now)
 	if err != nil {

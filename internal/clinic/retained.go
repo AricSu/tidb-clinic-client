@@ -11,9 +11,9 @@ import (
 type catalogIntent string
 
 const (
-	catalogIntentLogs        catalogIntent = "logs"
-	catalogIntentSlowQueries catalogIntent = "slow_query"
-	catalogIntentConfigs     catalogIntent = "configs"
+	catalogIntentCollectedData catalogIntent = "collected_data"
+	catalogIntentLogs          catalogIntent = "logs"
+	catalogIntentSlowQueries   catalogIntent = "slow_queries"
 )
 
 func (c *Client) resolveCatalogItemID(ctx context.Context, target resolvedTarget, intent catalogIntent, start, end int64) (string, error) {
@@ -33,7 +33,7 @@ func (c *Client) resolveCatalogItemID(ctx context.Context, target resolvedTarget
 		return "", err
 	}
 	if target.Platform == TargetPlatformTiUPCluster {
-		if err := c.clinic.EnsureCatalogDataReadable(ctx, requestContext, item); err != nil {
+		if err := c.clinic.EnsureCatalogDataReadable(ctx, requestContext, item, catalogDataTypeForIntent(intent)); err != nil {
 			return "", err
 		}
 	}
@@ -43,8 +43,24 @@ func (c *clinicServiceClient) ListCatalogData(ctx context.Context, requestContex
 	result, err := c.api.ListCatalogData(ctx, clinicapi.ListClusterDataRequest{Context: requestContext})
 	return result, mapAPIError(err)
 }
-func (c *clinicServiceClient) EnsureCatalogDataReadable(ctx context.Context, requestContext clinicapi.RequestContext, item clinicapi.ClinicDataItem) error {
-	return mapAPIError(c.api.EnsureCatalogDataReadable(ctx, requestContext, item))
+func (c *clinicServiceClient) EnsureCatalogDataReadable(ctx context.Context, requestContext clinicapi.RequestContext, item clinicapi.ClinicDataItem, dataType clinicapi.CatalogDataType) error {
+	return mapAPIError(c.api.EnsureCatalogDataReadable(ctx, clinicapi.EnsureCatalogDataReadableRequest{
+		Context:  requestContext,
+		Item:     item,
+		DataType: dataType,
+	}))
+}
+func catalogDataTypeForIntent(intent catalogIntent) clinicapi.CatalogDataType {
+	switch intent {
+	case catalogIntentLogs:
+		return clinicapi.CatalogDataTypeLogs
+	case catalogIntentSlowQueries:
+		return clinicapi.CatalogDataTypeLogs
+	case catalogIntentCollectedData:
+		return clinicapi.CatalogDataTypeCollectedDownload
+	default:
+		return clinicapi.CatalogDataTypeRetained
+	}
 }
 func selectCatalogItem(intent catalogIntent, items []clinicapi.ClinicDataItem, start, end int64) (clinicapi.ClinicDataItem, error) {
 	type candidate struct {
@@ -70,19 +86,20 @@ func selectCatalogItem(intent catalogIntent, items []clinicapi.ClinicDataItem, s
 		left := candidates[i]
 		right := candidates[j]
 		switch intent {
-		case catalogIntentConfigs:
+		case catalogIntentCollectedData:
+			if left.overlap != right.overlap {
+				return left.overlap > right.overlap
+			}
 			if left.item.EndTime != right.item.EndTime {
 				return left.item.EndTime > right.item.EndTime
 			}
 			if left.item.StartTime != right.item.StartTime {
 				return left.item.StartTime > right.item.StartTime
 			}
-		case catalogIntentSlowQueries:
-			if left.hasSlowLogs != right.hasSlowLogs {
+		case catalogIntentLogs, catalogIntentSlowQueries:
+			if intent == catalogIntentSlowQueries && left.hasSlowLogs != right.hasSlowLogs {
 				return left.hasSlowLogs
 			}
-			fallthrough
-		case catalogIntentLogs:
 			if left.overlap != right.overlap {
 				return left.overlap > right.overlap
 			}
@@ -99,10 +116,10 @@ func selectCatalogItem(intent catalogIntent, items []clinicapi.ClinicDataItem, s
 }
 func eligibleCatalogItem(intent catalogIntent, item clinicapi.ClinicDataItem) bool {
 	switch intent {
+	case catalogIntentCollectedData:
+		return true
 	case catalogIntentLogs, catalogIntentSlowQueries:
 		return item.HaveLog
-	case catalogIntentConfigs:
-		return item.HaveConfig
 	default:
 		return false
 	}

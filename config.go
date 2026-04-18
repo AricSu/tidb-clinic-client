@@ -36,9 +36,6 @@ func WithTimeout(d time.Duration) ClientOpt {
 func WithRebuildProbeInterval(d time.Duration) ClientOpt {
 	return clinic.WithRebuildProbeInterval(d)
 }
-func WithVerboseRequestLogs(enabled bool) ClientOpt {
-	return clinic.WithVerboseRequestLogs(enabled)
-}
 func WithRetry(max int, backoff, jitter time.Duration) ClientOpt {
 	return clinic.WithRetry(max, backoff, jitter)
 }

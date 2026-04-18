@@ -1,30 +1,134 @@
 # tidb-clinic-client
 
-`tidb-clinic-client` is the V2 cluster-scoped Go SDK and CLI for TiDB Clinic.
+`tidb-clinic-client` is the Go SDK and CLI for the current TiDB Clinic command set.
+The repository also vendors `compiler-rs` under [`compiler-rs/`](./compiler-rs) and
+uses its embedded WASM build to power `metrics compile`.
 
-V2 is a breaking simplification:
+## CLI
 
-- the public SDK is cluster-scoped and capability-first
-- `Client.Cloud`, `Client.DataProxy`, `Client.Loki`, and catalog-style public compatibility entry points are no longer part of the root client surface
-- the public CLI only exposes capability-first command trees
-- `tiup-cluster` collected-data behavior is inferred automatically from shared control-plane metadata
+Build the local binary:
 
-## Public SDK
+```bash
+make
+```
 
-The root client exposes one canonical public entry:
+Or install from source:
 
-- `Client.Clusters`
+```bash
+go install github.com/AricSu/tidb-clinic-client/cmd/clinic-client@latest
+```
 
-Callers resolve once and then work from a bound `ClusterHandle`.
+Current command tree:
 
-Platform rules:
+```bash
+clinic-client cluster
+clinic-client metrics query
+clinic-client metrics compile
+clinic-client slowquery
+clinic-client op-pkgs list
+clinic-client op-pkgs download
+clinic-client cloud-events search
+clinic-client cloud-logs search
+clinic-client cloud-profilings list
+clinic-client cloud-profilings download
+clinic-client cloud-plan-replayers list
+clinic-client cloud-plan-replayers download
+clinic-client cloud-oom-records list
+clinic-client cloud-oom-records download
+```
 
-- `Resolve(clusterID)` is the canonical path
-- the SDK resolves through the shared `/dashboard/clusters2 -> /orgs/{id} -> /clusters/{id}` chain
-- `org.type=="cloud"` stays on the cloud path
-- `deployTypeV2/deployType=="tiup-cluster"` is treated as the tiup-cluster collected-data path
+Command intent:
 
-## Quick Start
+- `cluster`: print cluster detail as raw JSON
+- `metrics query`: run a metrics range query
+- `metrics compile`: run the same metrics range query, then analyze the returned
+  series with `compiler-rs` using automatic `line` / `group` selection
+- `slowquery`: query slow queries for both cloud and OP clusters; cloud goes
+  directly to the NGM slowquery API, while OP automatically selects a matching
+  collected bundle
+- `op-pkgs list` / `download`: list or download on-premise collected-data
+  bundles
+- `cloud-events search`: search cloud cluster events
+- `cloud-logs search`: auto-dispatch between labels, label-values, and ranged
+  log query
+- `cloud-profilings list` / `download`: list or download cloud profiling
+  artifacts
+- `cloud-plan-replayers list` / `download`: list or download cloud plan
+  replayer artifacts
+- `cloud-oom-records list` / `download`: list or download cloud OOM record
+  artifacts
+
+## Environment
+
+Base inputs used across commands:
+
+- `CLINIC_PORTAL_URL`
+- `CLINIC_API_KEY` for `clinic.pingcap.com`
+- `CLINIC_CN_API_KEY` for `clinic.pingcap.com.cn`
+
+Common command inputs:
+
+- `metrics query` / `metrics compile`
+  - `CLINIC_METRICS_QUERY`
+  - `CLINIC_RANGE_STEP`
+- `cloud-events search`
+  - `CLINIC_EVENT_NAME`
+  - `CLINIC_EVENT_SEVERITY`
+  - also supports `--name` and `--severity`
+- `slowquery`
+  - `CLINIC_SLOWQUERY_ORDER_BY`
+  - `CLINIC_SLOWQUERY_LIMIT`
+  - `CLINIC_SLOWQUERY_DESC`
+  - also supports `--order-by`, `--limit`, `--desc`
+  - also accepts legacy `CLINIC_LIMIT` and `CLINIC_DESC`
+- `cloud-logs search`
+  - `CLINIC_LOKI_LABEL` to trigger label-values mode
+  - `CLINIC_LOKI_QUERY`
+  - `CLINIC_LOKI_LIMIT`
+  - `CLINIC_LOKI_DIRECTION`
+  - also supports `--label`, `--query`, `--limit`, `--direction`
+- download commands
+  - `CLINIC_OUTPUT_PATH`
+  - `CLINIC_DIAGNOSTIC_KEY` for cloud diagnostic downloads
+  - `CLINIC_PROFILE_TS`
+  - `CLINIC_PROFILE_TYPE`
+  - `CLINIC_PROFILE_COMPONENT`
+  - `CLINIC_PROFILE_ADDRESS`
+  - `CLINIC_PROFILE_DATA_FORMAT`
+
+Notes:
+
+- The CLI derives base URL and cluster ID from `CLINIC_PORTAL_URL`.
+- When the portal URL includes `from` and `to`, the CLI reuses that time window
+  automatically.
+- `slowquery` skips item selection for cloud clusters and only auto-selects a
+  collected bundle for non-cloud / OP deployments.
+- `cloud-logs search` chooses mode in this order:
+  `label-values -> query-range -> labels`.
+
+## SDK
+
+The public SDK is intentionally small and cluster-scoped.
+
+Canonical flow:
+
+1. Create a `Client`.
+2. Resolve a cluster with `Client.Clusters.Resolve`.
+3. Use the bound `ClusterHandle` capability clients.
+
+Supported public APIs:
+
+- `Client`, `Config`, auth / transport / retry options
+- `Client.Clusters.Resolve`
+- `ClusterHandle.Platform`, `ClusterHandle.ClusterID`, `ClusterHandle.OrgID`
+- `ClusterHandle.Metrics.QueryRange`
+- `ClusterHandle.SlowQueries.Query`
+- `ClusterHandle.Logs.QueryRange`, `Labels`, `LabelValues`
+- `ClusterHandle.CollectedData.List`, `Download`
+- `ClusterHandle.Profiling.ListGroups`, `Fetch`
+- `ClusterHandle.Diagnostics.ListPlanReplayer`, `ListOOMRecord`, `Download`
+
+Example:
 
 ```go
 package main
@@ -32,7 +136,6 @@ package main
 import (
 	"context"
 	"log"
-	"time"
 
 	clinicapi "github.com/AricSu/tidb-clinic-client"
 )
@@ -41,7 +144,6 @@ func main() {
 	client, err := clinicapi.NewClientWithConfig(clinicapi.Config{
 		BaseURL:     "https://clinic.pingcap.com",
 		BearerToken: "token",
-		Timeout:     10 * time.Second,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -66,164 +168,34 @@ func main() {
 }
 ```
 
-## Capability Surface
+## compiler-rs
 
-Target resolution:
+`compiler-rs` is the Rust time-series semantic kernel embedded by
+`metrics compile`. It stays inside this repository as a workspace subtree rather
+than a separate service.
 
-- `Clusters.Resolve` is the canonical cluster-id-first resolve entry point
-- it returns a `ClusterHandle`, which exposes direct cluster methods plus bound
-capability clients. For lightweight observability, the handle also exposes
-`Platform()`, `ClusterID()`, and `OrgID()`.
+Useful targets from the repository root:
 
-Cloud-only public capabilities:
+- `make`: build `bin/clinic-client`
+- `make test`: run Go tests and `compiler-rs` cargo tests
+- `make wasm`: rebuild the embedded `compiler-rs` WASM asset
+- `make viewer`: start the local regression viewer on port `8765`
+- `make sync-cases`: regenerate compiler regression cases
 
-- `Clusters.Search`
-- `ClusterHandle.Detail`
-- `ClusterHandle.Topology`
-- `ClusterHandle.Events`
-- `ClusterHandle.EventDetail`
-- `ClusterHandle.SQLAnalytics.TopSQLSummary`
-- `ClusterHandle.SQLAnalytics.TopSlowQueries`
-- `ClusterHandle.SQLAnalytics.SlowQuerySamples`
-- `ClusterHandle.SQLAnalytics.SlowQueryDetail`
-- `ClusterHandle.SQLAnalytics.SQLStatements`
-- `ClusterHandle.Profiling.ListGroups`
-- `ClusterHandle.Profiling.Detail`
-- `ClusterHandle.Profiling.ActionToken`
-- `ClusterHandle.Profiling.Download`
-- `ClusterHandle.Profiling.Fetch`
-- `ClusterHandle.Diagnostics.ListPlanReplayer`
-- `ClusterHandle.Diagnostics.ListOOMRecord`
-- `ClusterHandle.Diagnostics.Download`
+If you want to work from inside `compiler-rs/`, the local `Makefile` forwards
+`test`, `wasm`, `viewer`, and `sync-cases` back to the repo root.
 
-Cross-platform public capabilities:
+## Development
 
-- `ClusterHandle.Metrics.QueryRange`
-- `ClusterHandle.Metrics.QueryInstant`
-- `ClusterHandle.Metrics.QuerySeries`
-- `ClusterHandle.Metrics.SeriesExists`
-- `ClusterHandle.Logs.Query` / `QueryRange` / `Labels` / `LabelValues` on cloud
-- `ClusterHandle.Logs.Search` on `tiup-cluster`
-- `ClusterHandle.SQLAnalytics.Query` / `Schema` on cloud
-- `ClusterHandle.SQLAnalytics.SlowQueryRecords` on `tiup-cluster`
-- `ClusterHandle.Configs.Get` on `tiup-cluster`
-- `ClusterHandle.Capabilities.Discover` on both paths
+This repository only keeps the SDK and CLI surface that backs the current
+command tree. Do not reintroduce legacy command trees, compatibility shims, or
+backend-shaped helper APIs that are no longer exposed.
 
-Capability discovery is the public contract for availability. Unsupported work returns `ErrUnsupported` from the client surface before transport errors leak through.
-
-The stable capability set is:
-
-- `cluster_detail`
-- `topology`
-- `events`
-- `metrics`
-- `logs`
-- `sql_query`
-- `schema`
-- `topsql`
-- `slow_query`
-- `sql_statements`
-- `configs`
-- `profiling`
-- `diagnostic_files`
-
-## CLI
-
-Install:
+Recommended checks:
 
 ```bash
-go install github.com/AricSu/tidb-clinic-client/cmd/clinic-client@latest
+make
+make test
+make vet
+make check
 ```
-
-Top-level V2 commands:
-
-```bash
-clinic-client clusters ...
-clinic-client metrics ...
-clinic-client logs ...
-clinic-client sql ...
-clinic-client configs ...
-clinic-client profiling ...
-clinic-client diagnostics ...
-clinic-client capabilities ...
-```
-
-Important subcommands:
-
-```bash
-clinic-client logs search
-clinic-client sql slowquery-records
-clinic-client configs get
-clinic-client capabilities discover
-```
-
-Removed in V2:
-
-- `clinic-client cloud ...`
-- `clinic-client op ...`
-
-## CLI Environment
-
-Required for all runs:
-
-- `CLINIC_API_KEY`
-- `CLINIC_CLUSTER_ID`
-
-Platform selection:
-
-- the CLI always auto-resolves from `CLINIC_CLUSTER_ID`
-
-Common query inputs:
-
-- `CLINIC_METRICS_QUERY`
-- `CLINIC_METRICS_MATCH`
-- `CLINIC_RANGE_START`
-- `CLINIC_RANGE_END`
-- `CLINIC_RANGE_STEP`
-- `CLINIC_QUERY_TIME`
-- `CLINIC_TIMEOUT_SEC`
-
-Shared SQL / logs / collected-data inputs:
-
-- `CLINIC_LIMIT`
-- `CLINIC_DESC`
-- `CLINIC_LOG_PATTERN`
-- `CLINIC_SLOWQUERY_ORDER_BY`
-
-SQL analytics inputs:
-
-- `CLINIC_COMPONENT`
-- `CLINIC_INSTANCE`
-- `CLINIC_TOPSQL_WINDOW`
-- `CLINIC_TOPSQL_GROUP_BY`
-- `CLINIC_SLOWQUERY_DIGEST`
-- `CLINIC_SLOWQUERY_ID`
-- `CLINIC_SLOWQUERY_CONNECTION_ID`
-- `CLINIC_SLOWQUERY_TIMESTAMP`
-- `CLINIC_SLOWQUERY_FIELDS`
-
-Slow-query detail rules:
-
-- on `tiup-cluster`, `sql slowquery-detail` accepts `CLINIC_SLOWQUERY_ID` and resolves the collected item automatically from `CLINIC_RANGE_START` and `CLINIC_RANGE_END`
-- on cloud, `sql slowquery-detail` uses `CLINIC_SLOWQUERY_DIGEST + CLINIC_SLOWQUERY_CONNECTION_ID + CLINIC_SLOWQUERY_TIMESTAMP`
-
-## Architecture
-
-The public call model is:
-
-- `Client/ClusterHandle -> resolve -> support check -> Clinic API client -> HTTP transport`
-
-The SDK keeps the routing and retained-data decisions inside `internal/clinic`,
-and keeps the remote API integration inside `internal/clinicapi`. The transport
-boundary stays internal so request/response wiring can change without changing
-the public SDK contract.
-
-## Notes
-
-- low-level transport is an internal implementation detail for V2 callers
-- capability-native result types are the public contract
-- tiup-cluster collected-data item selection for logs, slow-query records, and config snapshots happens automatically inside the SDK
-- OP collected-data-backed public results expose retained-data provenance through
-  `RetainedData`; legacy top-level compatibility fields are not part of the V2
-  public contract
-- deleted/tier-specific restrictions are surfaced through capability discovery and `ErrUnsupported`

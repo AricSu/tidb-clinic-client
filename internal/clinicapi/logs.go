@@ -8,33 +8,6 @@ import (
 	"strings"
 )
 
-func (c *lokiClient) Query(ctx context.Context, req LokiQueryRequest) (LokiQueryResult, error) {
-	if c == nil || c.transport == nil {
-		return LokiQueryResult{}, &Error{Class: ErrBackend, Message: "loki client is nil"}
-	}
-	if err := validateClusterIDOnly(lokiEndpointPrefix, req.ClusterID); err != nil {
-		return LokiQueryResult{}, err
-	}
-	if strings.TrimSpace(req.Query) == "" {
-		return LokiQueryResult{}, &Error{Class: ErrInvalidRequest, Endpoint: lokiQueryEndpoint(req.ClusterID), Message: "query is required"}
-	}
-	route, err := routeFromClusterIDOnly(lokiEndpointPrefix, req.ClusterID)
-	if err != nil {
-		return LokiQueryResult{}, err
-	}
-	query := url.Values{}
-	query.Set("query", strings.TrimSpace(req.Query))
-	if req.Time > 0 {
-		query.Set("time", strconv.FormatInt(req.Time, 10))
-	}
-	if req.Limit > 0 {
-		query.Set("limit", strconv.Itoa(req.Limit))
-	}
-	if direction := strings.TrimSpace(req.Direction); direction != "" {
-		query.Set("direction", direction)
-	}
-	return doLokiQuery(ctx, c.transport, lokiQueryEndpoint(req.ClusterID), query, route)
-}
 func (c *lokiClient) QueryRange(ctx context.Context, req LokiQueryRangeRequest) (LokiQueryResult, error) {
 	if c == nil || c.transport == nil {
 		return LokiQueryResult{}, &Error{Class: ErrBackend, Message: "loki client is nil"}
@@ -169,58 +142,6 @@ func asNestedStringPairs(v any) [][]string {
 			pair = append(pair, asTrimmedString(value))
 		}
 		out = append(out, pair)
-	}
-	return out
-}
-func (c *logSearchAPIClient) Search(ctx context.Context, req LogSearchRequest) (LogSearchResult, error) {
-	if c == nil || c.transport == nil {
-		return LogSearchResult{}, &Error{Class: ErrBackend, Message: "log search client is nil"}
-	}
-	route, err := routeFromItemContext(logsEndpoint, req.Context, req.ItemID)
-	if err != nil {
-		return LogSearchResult{}, err
-	}
-	query := url.Values{}
-	query.Set("itemID", strings.TrimSpace(req.ItemID))
-	if req.StartTime > 0 {
-		query.Set("startTime", strconv.FormatInt(req.StartTime, 10))
-	}
-	if req.EndTime > 0 {
-		query.Set("endTime", strconv.FormatInt(req.EndTime, 10))
-	}
-	if pattern := strings.TrimSpace(req.Pattern); pattern != "" {
-		query.Set("pattern", pattern)
-	}
-	if req.Limit > 0 {
-		query.Set("limit", strconv.Itoa(req.Limit))
-	}
-	var raw any
-	if err := c.transport.getJSON(ctx, logsEndpoint, query, route.headers, route.trace, &raw); err != nil {
-		return LogSearchResult{}, err
-	}
-	return normalizeLogSearchResult(raw, req.ItemID), nil
-}
-func normalizeLogSearchResult(raw any, itemID string) LogSearchResult {
-	total, records := unwrapCollection(raw)
-	if total <= 0 {
-		total = len(records)
-	}
-	out := LogSearchResult{
-		Total:   total,
-		Records: make([]LogRecord, 0, len(records)),
-	}
-	for _, row := range records {
-		sourceRef := asTrimmedString(firstPresent(row, "sourceRef", "source_ref", "itemID"))
-		if sourceRef == "" {
-			sourceRef = strings.TrimSpace(itemID)
-		}
-		out.Records = append(out.Records, LogRecord{
-			Timestamp: asInt64OrZero(firstPresent(row, "timestamp", "time")),
-			Component: asTrimmedString(firstPresent(row, "component", "module", "instance")),
-			Level:     asTrimmedString(firstPresent(row, "level", "severity")),
-			Message:   asTrimmedString(firstPresent(row, "message", "msg", "line")),
-			SourceRef: sourceRef,
-		})
 	}
 	return out
 }

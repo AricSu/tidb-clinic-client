@@ -21,10 +21,14 @@ func (t *transport) doJSON(ctx context.Context, opts requestOptions, out any) er
 	if err != nil {
 		return err
 	}
-	if out == nil || len(bytes.TrimSpace(body)) == 0 {
+	trimmed := bytes.TrimSpace(body)
+	if out == nil || len(trimmed) == 0 {
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := classifyUnexpectedJSONBody(opts.path, trimmed); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.UseNumber()
 	if err := decoder.Decode(out); err != nil {
 		return &Error{
@@ -35,6 +39,38 @@ func (t *transport) doJSON(ctx context.Context, opts requestOptions, out any) er
 		}
 	}
 	return nil
+}
+
+func classifyUnexpectedJSONBody(endpoint string, body []byte) error {
+	if !looksLikeHTMLDocument(body) {
+		return nil
+	}
+	message := "received HTML instead of JSON from clinic API"
+	if looksLikeClinicPortalLogin(body) {
+		message = "request was redirected to Clinic login page; the current API key cannot access this Kibana endpoint"
+		return &Error{
+			Class:    ErrAuth,
+			Endpoint: endpoint,
+			Message:  message,
+		}
+	}
+	return &Error{
+		Class:    ErrBackend,
+		Endpoint: endpoint,
+		Message:  message,
+	}
+}
+
+func looksLikeHTMLDocument(body []byte) bool {
+	lower := strings.ToLower(strings.TrimSpace(string(body)))
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html")
+}
+
+func looksLikeClinicPortalLogin(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "<title>tidb clinic</title>") ||
+		strings.Contains(lower, "/#/login") ||
+		strings.Contains(lower, "name=\"description\" content=\"tidb clinic\"")
 }
 func (t *transport) doBytes(ctx context.Context, opts requestOptions) ([]byte, responseMeta, error) {
 	if t == nil {
@@ -351,9 +387,6 @@ func extractStringValue(v any) string {
 	}
 }
 func (t *transport) logStart(opts requestOptions, attempt int) {
-	if t != nil && t.logger != nil && t.verboseRequestLogs {
-		t.logger.Printf("stage=clinic_api endpoint=%s status=start method=%s attempt=%d%s", opts.path, opts.method, attempt, opts.trace.logSuffix())
-	}
 	if t != nil && t.hooks.OnRequestStart != nil {
 		t.hooks.OnRequestStart(opts.requestInfo(attempt))
 	}
@@ -363,9 +396,6 @@ func (t *transport) logDone(opts requestOptions, attempt int, startedAt time.Tim
 		return
 	}
 	result := opts.requestResult(attempt, startedAt, meta)
-	if t.logger != nil {
-		t.logger.Printf("stage=clinic_api endpoint=%s status=done method=%s attempt=%d status_code=%d duration_ms=%d response_bytes=%d%s", opts.path, opts.method, attempt, meta.statusCode, time.Since(startedAt).Milliseconds(), meta.responseBytes, opts.trace.logSuffix())
-	}
 	if t.hooks.OnRequestDone != nil {
 		t.hooks.OnRequestDone(result)
 	}
@@ -375,9 +405,6 @@ func (t *transport) logRetry(opts requestOptions, attempt int, startedAt time.Ti
 		return
 	}
 	result := opts.requestResult(attempt, startedAt, meta)
-	if t.logger != nil {
-		t.logger.Printf("stage=clinic_api endpoint=%s status=retry method=%s attempt=%d status_code=%d duration_ms=%d response_bytes=%d error_class=%s retryable=%t err=%q%s", opts.path, opts.method, attempt, meta.statusCode, time.Since(startedAt).Milliseconds(), meta.responseBytes, err.Class, err.Retryable, err.Error(), opts.trace.logSuffix())
-	}
 	if t.hooks.OnRetry != nil {
 		t.hooks.OnRetry(RequestRetry{
 			RequestResult: result,
@@ -399,9 +426,6 @@ func (t *transport) logError(opts requestOptions, attempt int, startedAt time.Ti
 		retryable = clinicErr.Retryable
 	}
 	result := opts.requestResult(attempt, startedAt, meta)
-	if t.logger != nil {
-		t.logger.Printf("stage=clinic_api endpoint=%s status=error method=%s attempt=%d status_code=%d duration_ms=%d response_bytes=%d error_class=%s retryable=%t err=%q%s", opts.path, opts.method, attempt, meta.statusCode, time.Since(startedAt).Milliseconds(), meta.responseBytes, errorClass, retryable, err.Error(), opts.trace.logSuffix())
-	}
 	if t.hooks.OnError != nil {
 		t.hooks.OnError(RequestFailure{
 			RequestResult: result,

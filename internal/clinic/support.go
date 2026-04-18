@@ -10,100 +10,63 @@ import (
 )
 
 type (
-	AuthProvider              = model.AuthProvider
-	AuthProviderFunc          = model.AuthProviderFunc
-	BearerTokenAuthProvider   = model.BearerTokenAuthProvider
-	ErrorClass                = model.ErrorClass
-	Error                     = model.Error
-	Hooks                     = model.Hooks
-	RequestInfo               = model.RequestInfo
-	RequestResult             = model.RequestResult
-	RequestRetry              = model.RequestRetry
-	RequestFailure            = model.RequestFailure
-	RetainedDataRef           = model.RetainedDataRef
-	QueryMetadata             = model.QueryMetadata
-	CapabilityName            = model.CapabilityName
-	CapabilityScope           = model.CapabilityScope
-	CapabilityStability       = model.CapabilityStability
-	CapabilityDescriptor      = model.CapabilityDescriptor
-	ClusterCapabilities       = model.ClusterCapabilities
-	TimeSeriesQuery           = model.TimeSeriesQuery
-	LogQuery                  = model.LogQuery
-	LogRangeQuery             = model.LogRangeQuery
-	LogLabelsQuery            = model.LogLabelsQuery
-	LogLabelValuesQuery       = model.LogLabelValuesQuery
-	LogSearchQuery            = model.LogSearchQuery
-	SQLQuery                  = model.SQLQuery
-	SchemaQuery               = model.SchemaQuery
-	TopSQLSummaryQuery        = model.TopSQLSummaryQuery
-	TopSlowQueriesQuery       = model.TopSlowQueriesQuery
-	SlowQuerySamplesQuery     = model.SlowQuerySamplesQuery
-	SlowQueryDetailQuery      = model.SlowQueryDetailQuery
-	SlowQueryRecordsQuery     = model.SlowQueryRecordsQuery
-	SQLStatementsQuery        = model.SQLStatementsQuery
-	ProfileActionTokenRequest = model.ProfileActionTokenRequest
-	ProfileDownloadRequest    = model.ProfileDownloadRequest
-	ProfileFetchRequest       = model.ProfileFetchRequest
-	DiagnosticDownloadRequest = model.DiagnosticDownloadRequest
-	ConfigQuery               = model.ConfigQuery
-	SeriesKind                = model.SeriesKind
-	SeriesPoint               = model.SeriesPoint
-	Series                    = model.Series
-	SeriesResult              = model.SeriesResult
-	StreamValue               = model.StreamValue
-	Stream                    = model.Stream
-	StreamResult              = model.StreamResult
-	TableResult               = model.TableResult
-	ListResult                = model.ListResult
-	ObjectResult              = model.ObjectResult
-	BlobResult                = model.BlobResult
-	MetricQueryRangeResult    = model.SeriesResult
-	MetricQueryInstantResult  = model.SeriesResult
-	MetricQuerySeriesResult   = model.SeriesResult
-	LogQueryResult            = model.StreamResult
-	LogLabelsResult           = model.ListResult
-	LogSearchResult           = model.ListResult
-	AnalyticalResult          = model.TableResult
-	SchemaResult              = model.TableResult
-	TopSQLSummaryResult       = model.TableResult
-	SlowQuerySummaryResult    = model.TableResult
-	SlowQuerySamplesResult    = model.ListResult
-	SlowQueryDetail           = model.ObjectResult
-	SlowQueryRecordsResult    = model.TableResult
-	ProfileGroupsResult       = model.ListResult
-	ProfileGroupDetail        = model.ObjectResult
-	DiagnosticListResult      = model.ListResult
-	ConfigResult              = model.TableResult
-	DownloadedArtifact        = model.DownloadedArtifact
+	AuthProvider                   = model.AuthProvider
+	AuthProviderFunc               = model.AuthProviderFunc
+	BearerTokenAuthProvider        = model.BearerTokenAuthProvider
+	ErrorClass                     = model.ErrorClass
+	Error                          = model.Error
+	Hooks                          = model.Hooks
+	RequestInfo                    = model.RequestInfo
+	RequestResult                  = model.RequestResult
+	RequestRetry                   = model.RequestRetry
+	RequestFailure                 = model.RequestFailure
+	RetainedDataRef                = model.RetainedDataRef
+	CollectedDataItem              = model.CollectedDataItem
+	QueryMetadata                  = model.QueryMetadata
+	TimeSeriesQuery                = model.TimeSeriesQuery
+	MetricsCompileQuery            = model.MetricsCompileQuery
+	LogRangeQuery                  = model.LogRangeQuery
+	SlowQueryQuery                 = model.SlowQueryQuery
+	SlowQuerySamplesQuery          = model.SlowQuerySamplesQuery
+	LogLabelsQuery                 = model.LogLabelsQuery
+	LogLabelValuesQuery            = model.LogLabelValuesQuery
+	ProfileFetchRequest            = model.ProfileFetchRequest
+	DiagnosticDownloadRequest      = model.DiagnosticDownloadRequest
+	CollectedDataDownloadRequest   = model.CollectedDataDownloadRequest
+	SeriesKind                     = model.SeriesKind
+	SeriesPoint                    = model.SeriesPoint
+	Series                         = model.Series
+	SeriesResult                   = model.SeriesResult
+	StreamValue                    = model.StreamValue
+	SlowQueryRecord                = model.SlowQueryRecord
+	SlowQueryResult                = model.SlowQueryResult
+	Stream                         = model.Stream
+	StreamResult                   = model.StreamResult
+	ListResult                     = model.ListResult
+	BlobResult                     = model.BlobResult
+	MetricQueryRangeResult         = model.SeriesResult
+	CompiledTimeseriesProblemRange = model.CompiledTimeseriesProblemRange
+	CompiledTimeseriesEvent        = model.CompiledTimeseriesEvent
+	CompiledTimeseriesDigest       = model.CompiledTimeseriesDigest
+	LogQueryResult                 = model.StreamResult
+	LogLabelsResult                = model.ListResult
+	SlowQuerySamplesResult         = model.ListResult
+	ProfileGroupsResult            = model.ListResult
+	DiagnosticListResult           = model.ListResult
+	DownloadedArtifact             = model.DownloadedArtifact
 )
 
 const (
-	ErrInvalidRequest              = model.ErrInvalidRequest
-	ErrUnsupported                 = model.ErrUnsupported
-	ErrAuth                        = model.ErrAuth
-	ErrNotFound                    = model.ErrNotFound
-	ErrNoData                      = model.ErrNoData
-	ErrTimeout                     = model.ErrTimeout
-	ErrRateLimit                   = model.ErrRateLimit
-	ErrDecode                      = model.ErrDecode
-	ErrBackend                     = model.ErrBackend
-	ErrTransient                   = model.ErrTransient
-	CapabilityClusterDetail        = model.CapabilityClusterDetail
-	CapabilityTopology             = model.CapabilityTopology
-	CapabilityEvents               = model.CapabilityEvents
-	CapabilityMetrics              = model.CapabilityMetrics
-	CapabilityLogs                 = model.CapabilityLogs
-	CapabilitySQLQuery             = model.CapabilitySQLQuery
-	CapabilitySchema               = model.CapabilitySchema
-	CapabilityTopSQL               = model.CapabilityTopSQL
-	CapabilitySlowQuery            = model.CapabilitySlowQuery
-	CapabilitySQLStatements        = model.CapabilitySQLStatements
-	CapabilityConfigs              = model.CapabilityConfigs
-	CapabilityProfiling            = model.CapabilityProfiling
-	CapabilityDiagnosticFiles      = model.CapabilityDiagnosticFiles
-	CapabilityScopeCluster         = model.CapabilityScopeCluster
-	CapabilityStabilityStable      = model.CapabilityStabilityStable
-	CapabilityStabilityPlaceholder = model.CapabilityStabilityPlaceholder
+	ErrInvalidRequest = model.ErrInvalidRequest
+	ErrUnsupported    = model.ErrUnsupported
+	ErrAuth           = model.ErrAuth
+	ErrNotFound       = model.ErrNotFound
+	ErrNoData         = model.ErrNoData
+	ErrTimeout        = model.ErrTimeout
+	ErrRateLimit      = model.ErrRateLimit
+	ErrDecode         = model.ErrDecode
+	ErrBackend        = model.ErrBackend
+	ErrTransient      = model.ErrTransient
 )
 
 func cloneAnyMap(in map[string]any) map[string]any {
@@ -191,32 +154,6 @@ func cloneResolvedTarget(in resolvedTarget) resolvedTarget {
 	out.TiUP = cloneResolvedTiUPTarget(in.TiUP)
 	return out
 }
-func cloneClusterCapabilities(in ClusterCapabilities) ClusterCapabilities {
-	out := ClusterCapabilities{
-		Cluster:      in.Cluster,
-		Capabilities: make([]CapabilityDescriptor, 0, len(in.Capabilities)),
-	}
-	for _, descriptor := range in.Capabilities {
-		descriptor.TierConstraints = append([]string(nil), descriptor.TierConstraints...)
-		out.Capabilities = append(out.Capabilities, descriptor)
-	}
-	return out
-}
-func clusterMetadataFromResolvedTarget(target resolvedTarget) model.ClusterMetadata {
-	return model.ClusterMetadata{
-		Platform:     model.TargetPlatform(target.Platform),
-		ClusterID:    target.ClusterID,
-		OrgID:        target.OrgID,
-		ClusterType:  target.ClusterType,
-		Provider:     target.Provider,
-		Region:       target.Region,
-		DeployType:   target.DeployType,
-		DeployTypeV2: target.DeployTypeV2,
-		ParentID:     target.ParentID,
-		Status:       target.Status,
-		Deleted:      target.Deleted,
-	}
-}
 func clinicAPIConfig(cfg model.Config) apitypes.Config {
 	return apitypes.Config{
 		BaseURL:              cfg.BaseURL,
@@ -224,7 +161,6 @@ func clinicAPIConfig(cfg model.Config) apitypes.Config {
 		AuthProvider:         cfg.AuthProvider,
 		Timeout:              cfg.Timeout,
 		RebuildProbeInterval: cfg.RebuildProbeInterval,
-		VerboseRequestLogs:   cfg.VerboseRequestLogs,
 		RetryMax:             cfg.RetryMax,
 		RetryBackoff:         cfg.RetryBackoff,
 		RetryJitter:          cfg.RetryJitter,

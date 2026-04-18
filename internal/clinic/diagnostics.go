@@ -38,11 +38,20 @@ func (c *DiagnosticsClient) resolveDiagnosticsTarget(ctx context.Context) (diagn
 	if c == nil || c.handle == nil || c.handle.client == nil || c.handle.client.clinic == nil {
 		return diagnosticsTarget{}, &Error{Class: ErrBackend, Message: "diagnostics client is nil"}
 	}
-	target, err := c.handle.resolveCloudTarget(ctx, CapabilityDiagnosticFiles)
+	target, err := c.handle.requireTarget("diagnostics client")
 	if err != nil {
 		return diagnosticsTarget{}, err
 	}
-	return target.Diagnostics, nil
+	if target.Deleted {
+		return diagnosticsTarget{}, unsupportedOperationError("diagnostics", "diagnostic files are unavailable for deleted clusters")
+	}
+	if target.Platform != TargetPlatformCloud || target.Cloud == nil {
+		return diagnosticsTarget{}, unsupportedOperationError("diagnostics", "diagnostic files are unavailable for tiup-cluster clusters")
+	}
+	if target.isSharedTier() {
+		return diagnosticsTarget{}, unsupportedOperationError("diagnostics", "diagnostic files are unavailable for shared/starter/essential clusters")
+	}
+	return target.Cloud.Diagnostics, nil
 }
 func (c *clinicServiceClient) ListPlanReplayer(ctx context.Context, target diagnosticsTarget, start, end int64) (apitypes.CloudDiagnosticListResult, error) {
 	result, err := c.api.ListPlanReplayerArtifacts(ctx, apitypes.CloudDiagnosticListRequest{

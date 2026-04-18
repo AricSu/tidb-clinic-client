@@ -2,7 +2,6 @@ package clinicapi
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/AricSu/tidb-clinic-client/internal/model"
 	"net/url"
@@ -77,98 +76,6 @@ func (c *metricsAPIClient) QueryRange(ctx context.Context, req MetricsQueryRange
 			})
 		}
 		out.Series = append(out.Series, next)
-	}
-	return out, nil
-}
-func (c *metricsAPIClient) QueryInstant(ctx context.Context, req MetricsQueryInstantRequest) (MetricQueryInstantResult, error) {
-	if c == nil || c.transport == nil {
-		return MetricQueryInstantResult{}, &Error{Class: ErrBackend, Message: "metrics client is nil"}
-	}
-	if err := validateMetricsContext(req.Context); err != nil {
-		return MetricQueryInstantResult{}, err
-	}
-	if strings.TrimSpace(req.Query) == "" {
-		return MetricQueryInstantResult{}, &Error{Class: ErrInvalidRequest, Endpoint: metricsEndpoint, Message: "query is required"}
-	}
-	route, err := routeFromContext(metricsEndpoint, req.Context, "")
-	if err != nil {
-		return MetricQueryInstantResult{}, err
-	}
-	query := url.Values{}
-	query.Set("query", strings.TrimSpace(req.Query))
-	if req.Time > 0 {
-		query.Set("time", strconv.FormatInt(req.Time, 10))
-	}
-	if timeout := strings.TrimSpace(req.Timeout); timeout != "" {
-		query.Set("timeout", timeout)
-	}
-	var resp struct {
-		Status    string `json:"status"`
-		IsPartial bool   `json:"isPartial"`
-		Data      struct {
-			ResultType string          `json:"resultType"`
-			Result     json.RawMessage `json:"result"`
-		} `json:"data"`
-	}
-	if err := c.transport.getJSON(ctx, metricsEndpoint, query, route.headers, route.trace, &resp); err != nil {
-		return MetricQueryInstantResult{}, err
-	}
-	if status := strings.ToLower(strings.TrimSpace(resp.Status)); status != "" && status != "success" {
-		return MetricQueryInstantResult{}, &Error{Class: ErrBackend, Endpoint: metricsEndpoint, Message: fmt.Sprintf("clinic metrics returned status=%s", status)}
-	}
-	out := MetricQueryInstantResult{Kind: model.SeriesKindInstant, IsPartial: resp.IsPartial}
-	series, err := decodeMetricInstantSeries(resp.Data.ResultType, resp.Data.Result)
-	if err != nil {
-		return MetricQueryInstantResult{}, &Error{Class: ErrBackend, Endpoint: metricsEndpoint, Message: "decode instant metrics result", Cause: err}
-	}
-	out.Series = series
-	return out, nil
-}
-func (c *metricsAPIClient) QuerySeries(ctx context.Context, req MetricsQuerySeriesRequest) (MetricQuerySeriesResult, error) {
-	if c == nil || c.transport == nil {
-		return MetricQuerySeriesResult{}, &Error{Class: ErrBackend, Message: "metrics client is nil"}
-	}
-	if err := validateMetricsContext(req.Context); err != nil {
-		return MetricQuerySeriesResult{}, err
-	}
-	matches := compactNonEmptyStrings(req.Match)
-	if len(matches) == 0 {
-		return MetricQuerySeriesResult{}, &Error{Class: ErrInvalidRequest, Endpoint: metricsEndpoint, Message: "at least one match[] selector is required"}
-	}
-	switch {
-	case req.Start == 0 && req.End == 0:
-	case req.Start > 0 && req.End > 0 && req.End >= req.Start:
-	default:
-		return MetricQuerySeriesResult{}, &Error{Class: ErrInvalidRequest, Endpoint: metricsEndpoint, Message: "valid start/end range is required when querying series"}
-	}
-	route, err := routeFromContext(metricsEndpoint, req.Context, "")
-	if err != nil {
-		return MetricQuerySeriesResult{}, err
-	}
-	query := url.Values{}
-	for _, match := range matches {
-		query.Add("match[]", match)
-	}
-	if req.Start > 0 {
-		query.Set("start", strconv.FormatInt(req.Start, 10))
-		query.Set("end", strconv.FormatInt(req.End, 10))
-	}
-	if timeout := strings.TrimSpace(req.Timeout); timeout != "" {
-		query.Set("timeout", timeout)
-	}
-	var resp struct {
-		Status string              `json:"status"`
-		Data   []map[string]string `json:"data"`
-	}
-	if err := c.transport.getJSON(ctx, metricsEndpoint, query, route.headers, route.trace, &resp); err != nil {
-		return MetricQuerySeriesResult{}, err
-	}
-	if status := strings.ToLower(strings.TrimSpace(resp.Status)); status != "" && status != "success" {
-		return MetricQuerySeriesResult{}, &Error{Class: ErrBackend, Endpoint: metricsEndpoint, Message: fmt.Sprintf("clinic metrics returned status=%s", status)}
-	}
-	out := MetricQuerySeriesResult{Kind: model.SeriesKindSet, Series: make([]Series, 0, len(resp.Data))}
-	for _, item := range resp.Data {
-		out.Series = append(out.Series, Series{Labels: cloneStringMap(item)})
 	}
 	return out, nil
 }
@@ -257,98 +164,6 @@ func validateMetricsContext(ctx RequestContext) error {
 		return &Error{Class: ErrInvalidRequest, Endpoint: metricsEndpoint, Message: "cluster id is required"}
 	}
 	return nil
-}
-func decodeMetricInstantSeries(resultType string, raw json.RawMessage) ([]Series, error) {
-	switch strings.ToLower(strings.TrimSpace(resultType)) {
-	case "", "vector":
-		var rows []struct {
-			Metric map[string]string `json:"metric"`
-			Value  []any             `json:"value"`
-		}
-		if len(raw) == 0 || string(raw) == "null" {
-			return nil, nil
-		}
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			return nil, err
-		}
-		out := make([]Series, 0, len(rows))
-		for _, row := range rows {
-			sample, ok := metricSampleFromPair(row.Value)
-			if !ok {
-				continue
-			}
-			out = append(out, Series{
-				Labels: cloneStringMap(row.Metric),
-				Values: []SeriesPoint{sample},
-			})
-		}
-		return out, nil
-	case "matrix":
-		var rows []struct {
-			Metric map[string]string `json:"metric"`
-			Values [][]any           `json:"values"`
-		}
-		if len(raw) == 0 || string(raw) == "null" {
-			return nil, nil
-		}
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			return nil, err
-		}
-		out := make([]Series, 0, len(rows))
-		for _, row := range rows {
-			if len(row.Values) == 0 {
-				continue
-			}
-			sample, ok := metricSampleFromPair(row.Values[len(row.Values)-1])
-			if !ok {
-				continue
-			}
-			out = append(out, Series{
-				Labels: cloneStringMap(row.Metric),
-				Values: []SeriesPoint{sample},
-			})
-		}
-		return out, nil
-	case "scalar", "string":
-		var pair []any
-		if len(raw) == 0 || string(raw) == "null" {
-			return nil, nil
-		}
-		if err := json.Unmarshal(raw, &pair); err != nil {
-			return nil, err
-		}
-		sample, ok := metricSampleFromPair(pair)
-		if !ok {
-			return nil, nil
-		}
-		return []Series{{Values: []SeriesPoint{sample}}}, nil
-	default:
-		return nil, fmt.Errorf("unsupported instant resultType %q", resultType)
-	}
-}
-func metricSampleFromPair(pair []any) (SeriesPoint, bool) {
-	if len(pair) != 2 {
-		return SeriesPoint{}, false
-	}
-	ts, ok := asInt64(pair[0])
-	if !ok {
-		return SeriesPoint{}, false
-	}
-	return SeriesPoint{
-		Timestamp: ts,
-		Value:     fmt.Sprintf("%v", pair[1]),
-	}, true
-}
-func compactNonEmptyStrings(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, item := range in {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
 }
 func mergeMetricSamples(existing, incoming []SeriesPoint) []SeriesPoint {
 	if len(existing) == 0 && len(incoming) == 0 {

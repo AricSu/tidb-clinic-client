@@ -16,47 +16,34 @@ type commandSpec struct {
 	use, short, long, runID string
 }
 type groupSpec struct {
-	use, short, long string
-	commands         []commandSpec
+	use, short, long, runID string
+	commands                []commandSpec
+	groups                  []groupSpec
 }
 
 func defaultApp() App {
 	lookupEnv := lookupEnvWithDotEnv(os.LookupEnv, ".env")
 	bind := func(run commandRunner) func() error {
-		return func() error { return run(lookupEnv, time.Now, log.Default(), os.Stdout) }
+		return func() error { return run(lookupEnv, time.Now, log.New(os.Stderr, "", 0), os.Stdout) }
 	}
 	return App{
-		"metrics.query-range":   bind(runMetricsQueryRange),
-		"metrics.query-instant": bind(runMetricsQueryInstant),
-		"metrics.query-series":  bind(runMetricsQuerySeries),
-		"sql.slowquery-records": bind(runRetainedSlowQueriesQuery),
-		"logs.search":           bind(runRetainedLogsSearch),
-		"configs.get":           bind(runRetainedConfigsGet),
-		"clusters.detail":       bind(runClusterDetail),
-		"clusters.search":       bind(runClusterSearch),
-		"clusters.topology":     bind(runClusterTopology),
-		"sql.query":             bind(runCloudDataProxyQuery),
-		"sql.schema":            bind(runCloudDataProxySchema),
-		"sql.statements":        bind(runCapabilitySQLStatements),
-		"clusters.events":       bind(runCloudEventsQuery),
-		"clusters.event-detail": bind(runCloudEventsDetail),
-		"logs.query":            bind(runCloudLokiQuery),
-		"logs.query-range":      bind(runCloudLokiQueryRange),
-		"logs.labels":           bind(runCloudLokiLabels),
-		"logs.label-values":     bind(runCloudLokiLabelValues),
-		"profiling.groups":      bind(runCloudProfilingGroups),
-		"profiling.detail":      bind(runCloudProfilingDetail),
-		"profiling.download":    bind(runCloudProfilingDownload),
-		"diagnostics.plan":      bind(runCloudDiagnosticPlan),
-		"diagnostics.oom":       bind(runCloudDiagnosticOOM),
-		"diagnostics.download":  bind(runCloudDiagnosticDownload),
-		"sql.topsql":            bind(runCloudTopSQLSummary),
-		"sql.slowquery-top":     bind(runCloudTopSlowQueries),
-		"sql.slowquery-samples": bind(runCloudSlowQueriesList),
-		"sql.slowquery-detail":  bind(runCloudSlowQueriesDetail),
-		"capabilities.discover": bind(runCapabilityDiscover),
+		"cluster":                       bind(runClusterInfo),
+		"metrics.query":                 bind(runMetricsQueryRange),
+		"metrics.compile":               bind(runMetricsCompile),
+		"slowquery":                     bind(runSlowQuery),
+		"op-pkgs.list":                  bind(runCollectedDataList),
+		"op-pkgs.download":              bind(runCollectedDataDownload),
+		"cloud-events.search":           bind(runCloudEventsQuery),
+		"cloud-logs.search":             bind(runCloudLogs),
+		"cloud-profilings.list":         bind(runCloudProfilingGroups),
+		"cloud-profilings.download":     bind(runCloudProfilingDownload),
+		"cloud-plan-replayers.list":     bind(runCloudDiagnosticPlan),
+		"cloud-plan-replayers.download": bind(runCloudDiagnosticDownload),
+		"cloud-oom-records.list":        bind(runCloudDiagnosticOOM),
+		"cloud-oom-records.download":    bind(runCloudDiagnosticDownload),
 	}
 }
+
 func lookupEnvWithDotEnv(base func(string) (string, bool), path string) func(string) (string, bool) {
 	dotenv := parseDotEnvFile(path)
 	return func(key string) (string, bool) {
@@ -67,6 +54,7 @@ func lookupEnvWithDotEnv(base func(string) (string, bool), path string) func(str
 		return value, ok
 	}
 }
+
 func parseDotEnvFile(path string) map[string]string {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -93,6 +81,7 @@ func parseDotEnvFile(path string) map[string]string {
 	}
 	return out
 }
+
 func parseDotEnvValue(raw string) string {
 	value := strings.TrimSpace(raw)
 	if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
@@ -106,13 +95,15 @@ func parseDotEnvValue(raw string) string {
 	}
 	return strings.TrimSpace(value)
 }
+
 func NewCommand() *cobra.Command { return newRootCommandWithApp(defaultApp()) }
+
 func newRootCommandWithApp(deps App) *cobra.Command {
 	cobra.EnableCommandSorting = false
 	root := &cobra.Command{
 		Use:           "clinic-client",
 		Short:         "TiDB Clinic CLI",
-		Long:          helpBlock("Capability-first TiDB Clinic CLI.", "Preferred command paths:", "- clusters", "- metrics", "- logs", "- sql", "- configs", "- profiling", "- diagnostics", "- capabilities"),
+		Long:          helpBlock("Task-first TiDB Clinic CLI.", "Preferred command paths:", "- cluster", "- metrics query", "- metrics compile", "- slowquery", "- op-pkgs list", "- op-pkgs download", "- cloud-events search", "- cloud-logs search", "- cloud-profilings list", "- cloud-profilings download", "- cloud-plan-replayers list", "- cloud-plan-replayers download", "- cloud-oom-records list", "- cloud-oom-records download"),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -121,16 +112,35 @@ func newRootCommandWithApp(deps App) *cobra.Command {
 	}
 	return root
 }
+
 func newGroupCommand(group groupSpec, deps App) *cobra.Command {
-	cmd := &cobra.Command{Use: group.use, Short: group.short, Long: group.long}
-	for _, spec := range group.commands {
-		cmd.AddCommand(newLeafCommand(spec, deps))
+	run := deps[group.runID]
+	var groupCmd *cobra.Command
+	groupCmd = &cobra.Command{
+		Use:   group.use,
+		Short: group.short,
+		Long:  group.long,
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			if run == nil {
+				return groupCmd.Help()
+			}
+			return run()
+		},
 	}
-	return cmd
+	for _, spec := range group.commands {
+		groupCmd.AddCommand(newLeafCommand(spec, deps))
+	}
+	for _, child := range group.groups {
+		groupCmd.AddCommand(newGroupCommand(child, deps))
+	}
+	configureCommand(groupCmd, group.runID)
+	return groupCmd
 }
+
 func newLeafCommand(spec commandSpec, deps App) *cobra.Command {
 	run := deps[spec.runID]
-	return &cobra.Command{
+	leafCmd := &cobra.Command{
 		Use:   spec.use,
 		Short: spec.short,
 		Long:  spec.long,
@@ -142,129 +152,404 @@ func newLeafCommand(spec commandSpec, deps App) *cobra.Command {
 			return run()
 		},
 	}
+	configureCommand(leafCmd, spec.runID)
+	return leafCmd
 }
+
+func configureCommand(cmd *cobra.Command, runID string) {
+	if cmd == nil {
+		return
+	}
+	switch runID {
+	case "slowquery":
+		configureSlowQueryCommand(cmd)
+	case "cloud-events.search":
+		configureEventsCommand(cmd)
+	case "cloud-logs.search":
+		configureCloudLogsCommand(cmd)
+	}
+}
+
+func configureEventsCommand(cmd *cobra.Command) {
+	var flags eventFlagInputs
+	cmd.Flags().StringVar(&flags.Name, "name", "", "Activity name search term")
+	cmd.Flags().StringVar(&flags.Severity, "severity", "", "Event severity: info, warning, debug, critical")
+	originalRunE := cmd.RunE
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		flags.NameSet = cmd.Flags().Changed("name")
+		flags.SeveritySet = cmd.Flags().Changed("severity")
+		restore := pushEventFlagInputs(flags)
+		defer restore()
+		if originalRunE == nil {
+			return nil
+		}
+		return originalRunE(cmd, args)
+	}
+}
+
+func configureSlowQueryCommand(cmd *cobra.Command) {
+	var flags slowQueryFlagInputs
+	cmd.Flags().StringVar(&flags.OrderBy, "order-by", "", "Slow query sort field")
+	cmd.Flags().IntVar(&flags.Limit, "limit", 0, "Max slow query records to return")
+	cmd.Flags().BoolVar(&flags.Desc, "desc", false, "Sort slow queries in descending order")
+	cmd.Flags().StringVar(&flags.Digest, "digest", "", "Slow query digest to sample")
+	cmd.Flags().StringVar(&flags.Fields, "fields", "", "Comma-separated sample fields to request")
+	originalRunE := cmd.RunE
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		flags.OrderBySet = cmd.Flags().Changed("order-by")
+		flags.LimitSet = cmd.Flags().Changed("limit")
+		flags.DescSet = cmd.Flags().Changed("desc")
+		flags.DigestSet = cmd.Flags().Changed("digest")
+		flags.FieldsSet = cmd.Flags().Changed("fields")
+		restore := pushSlowQueryFlagInputs(flags)
+		defer restore()
+		if originalRunE == nil {
+			return nil
+		}
+		return originalRunE(cmd, args)
+	}
+}
+
+func configureCloudLogsCommand(cmd *cobra.Command) {
+	var flags cloudLogsFlagInputs
+	cmd.Flags().StringVar(&flags.Query, "query", "", "LogQL query")
+	cmd.Flags().IntVar(&flags.Limit, "limit", 0, "Max log lines to return")
+	cmd.Flags().StringVar(&flags.Direction, "direction", "", "Log direction: forward or backward")
+	cmd.Flags().StringVar(&flags.LabelName, "label", "", "Log label name")
+	originalRunE := cmd.RunE
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		flags.QuerySet = cmd.Flags().Changed("query")
+		flags.LimitSet = cmd.Flags().Changed("limit")
+		flags.DirectionSet = cmd.Flags().Changed("direction")
+		flags.LabelNameSet = cmd.Flags().Changed("label")
+		restore := pushCloudLogsFlagInputs(flags)
+		defer restore()
+		if originalRunE == nil {
+			return nil
+		}
+		return originalRunE(cmd, args)
+	}
+}
+
 func cmd(use, short, runID string) commandSpec {
 	return commandSpec{use: use, short: short, runID: runID}
 }
+
 func cmdLong(use, short, long, runID string) commandSpec {
 	return commandSpec{use: use, short: short, long: long, runID: runID}
 }
+
 func capabilityGroups() []groupSpec {
 	return []groupSpec{
 		{
-			use: "clusters", short: "Run capability-first cluster commands", long: cloudHelp("Run capability-first cluster commands."),
+			use: "cluster", short: "Get cluster detail as raw JSON", long: clusterHelp(), runID: "cluster",
+		},
+		{
+			use: "metrics", short: "Query metrics", long: metricsGroupHelp(),
 			commands: []commandSpec{
-				cmd("search", "Search clusters", "clusters.search"),
-				cmd("detail", "Get cluster detail", "clusters.detail"),
-				cmd("topology", "Get cluster topology", "clusters.topology"),
-				cmd("events", "Query cluster events", "clusters.events"),
-				cmd("event-detail", "Get one cluster event detail", "clusters.event-detail"),
+				cmdLong("query", "Query metrics over a time range", metricsQueryHelp(), "metrics.query"),
+				cmdLong("compile", "Query metrics and analyze them with compiler-rs", metricsCompileHelp(), "metrics.compile"),
 			},
 		},
 		{
-			use: "metrics", short: "Run capability-first metrics queries", long: sharedMetricsHelp(),
+			use: "slowquery", short: "Query slow queries for the current cluster and time range", long: slowQueryHelp(), runID: "slowquery",
+		},
+		{
+			use: "op-pkgs", short: "Work with on-premise collected-data packages", long: opPkgHelp(),
 			commands: []commandSpec{
-				cmd("query-range", "Query metrics over a time range", "metrics.query-range"),
-				cmd("query-instant", "Query metrics at one point in time", "metrics.query-instant"),
-				cmd("query-series", "Discover metric label sets over a time range", "metrics.query-series"),
+				cmdLong("list", "List on-premise collected-data packages", opPkgsHelp(), "op-pkgs.list"),
+				cmdLong("download", "Download one on-premise collected-data package", opPkgDownloadHelp(), "op-pkgs.download"),
 			},
 		},
 		{
-			use: "logs", short: "Run capability-first log queries", long: cloudHelp("Run capability-first log queries."),
+			use: "cloud-events", short: "Search cloud cluster events", long: cloudEventHelp(),
 			commands: []commandSpec{
-				cmd("query", "Run an instant log query", "logs.query"),
-				cmd("query-range", "Run a ranged log query", "logs.query-range"),
-				cmd("labels", "List log labels", "logs.labels"),
-				cmd("label-values", "List values for one log label", "logs.label-values"),
-				cmd("search", "Search collected log records with automatic item selection", "logs.search"),
+				cmdLong("search", "Search cloud cluster events", cloudEventsHelp(), "cloud-events.search"),
 			},
 		},
 		{
-			use: "sql", short: "Run capability-first SQL analytics commands", long: cloudHelp("Run capability-first SQL analytics commands."),
+			use: "cloud-logs", short: "Search cloud logs", long: cloudLogsGroupHelp(),
 			commands: []commandSpec{
-				cmd("query", "Run ad-hoc SQL via Data Proxy", "sql.query"),
-				cmd("schema", "Fetch SQL analytics schema", "sql.schema"),
-				cmd("topsql", "Get TopSQL summary", "sql.topsql"),
-				cmd("slowquery-top", "Get aggregated slow-query summary", "sql.slowquery-top"),
-				cmdLong("slowquery-samples", "List slow-query samples", collectedWorkflowHelp("List slow-query samples. The output includes id and item_id so a sample can be used directly with slowquery-detail."), "sql.slowquery-samples"),
-				cmdLong("slowquery-detail", "Get one slow-query detail", slowQueryDetailHelp(), "sql.slowquery-detail"),
-				cmd("statements", "Run SQL statements queries", "sql.statements"),
-				cmd("slowquery-records", "Query collected slow-query records with automatic item selection", "sql.slowquery-records"),
+				cmdLong("search", "Search cloud logs with automatic mode selection", cloudLogsHelp(), "cloud-logs.search"),
 			},
 		},
 		{
-			use: "configs", short: "Run capability-first config retrieval", long: collectedWorkflowHelp("Fetch tiup-cluster collected config snapshots through the configs client."),
+			use: "cloud-profilings", short: "Work with cloud profiling snapshots", long: cloudProfilingsGroupHelp(),
 			commands: []commandSpec{
-				cmd("get", "Fetch config snapshots with automatic item selection", "configs.get"),
+				cmdLong("list", "List cloud profiling snapshots", cloudProfilingsListHelp(), "cloud-profilings.list"),
+				cmdLong("download", "Download one cloud profiling artifact", cloudProfilingDownloadHelp(), "cloud-profilings.download"),
 			},
 		},
 		{
-			use: "profiling", short: "Run TiDB Cloud continuous profiling commands", long: cloudHelp("Run TiDB Cloud continuous profiling commands."),
+			use: "cloud-plan-replayers", short: "Work with cloud plan replayer artifacts", long: cloudPlanReplayersGroupHelp(),
 			commands: []commandSpec{
-				cmd("groups", "List profiling groups in a time window", "profiling.groups"),
-				cmd("detail", "Get profiling detail for one snapshot timestamp", "profiling.detail"),
-				cmd("download", "Fetch a profiling artifact to disk", "profiling.download"),
+				cmdLong("list", "List cloud plan replayer artifacts", cloudPlanReplayersHelp(), "cloud-plan-replayers.list"),
+				cmdLong("download", "Download one cloud diagnostic artifact", cloudDiagnosticDownloadHelp(), "cloud-plan-replayers.download"),
 			},
 		},
 		{
-			use: "diagnostics", short: "Run TiDB Cloud diagnostic artifact commands", long: cloudHelp("Run TiDB Cloud diagnostic artifact commands."),
+			use: "cloud-oom-records", short: "Work with cloud OOM record artifacts", long: cloudOOMRecordsGroupHelp(),
 			commands: []commandSpec{
-				cmd("plan-replayer", "List plan replayer artifacts", "diagnostics.plan"),
-				cmd("oom-record", "List OOM record artifacts", "diagnostics.oom"),
-				cmd("download", "Download one diagnostic artifact by storage key", "diagnostics.download"),
-			},
-		},
-		{
-			use: "capabilities", short: "Inspect capability availability for one cluster", long: cloudHelp("Inspect capability availability for one cluster."),
-			commands: []commandSpec{
-				cmd("discover", "Resolve the capability contract for one cluster", "capabilities.discover"),
+				cmdLong("list", "List cloud OOM record artifacts", cloudOOMRecordsHelp(), "cloud-oom-records.list"),
+				cmdLong("download", "Download one cloud diagnostic artifact", cloudDiagnosticDownloadHelp(), "cloud-oom-records.download"),
 			},
 		},
 	}
 }
+
 func helpBlock(lines ...string) string { return strings.TrimSpace(strings.Join(lines, "\n")) }
-func sharedMetricsHelp() string {
+
+func clusterHelp() string {
+	return cloudHelp("Get cluster detail as raw JSON.")
+}
+
+func metricsGroupHelp() string {
+	return cloudHelp("Query or compile metrics.")
+}
+
+func metricsQueryHelp() string {
 	return helpBlock(
-		"Run a Clinic metrics query.",
+		"Run a Clinic metrics range query.",
 		"",
 		"Required environment:",
-		"- CLINIC_API_KEY",
-		"- CLINIC_CLUSTER_ID",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
 		"",
 		"Metrics query inputs:",
-		"- CLINIC_METRICS_QUERY for query-range and query-instant",
-		"- CLINIC_METRICS_MATCH for query-series",
-		"- CLINIC_QUERY_TIME for query-instant",
-		"- CLINIC_RANGE_START / CLINIC_RANGE_END / CLINIC_RANGE_STEP",
+		"- CLINIC_METRICS_QUERY",
+		"- CLINIC_RANGE_STEP",
 	)
 }
-func collectedWorkflowHelp(noun string) string {
+
+func metricsCompileHelp() string {
+	return helpBlock(
+		"Query Clinic metrics and immediately analyze the returned series with compiler-rs.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"",
+		"Metrics query inputs:",
+		"- CLINIC_METRICS_QUERY",
+		"- CLINIC_RANGE_STEP",
+		"",
+		"Behavior:",
+		"- runs the same metrics range query as `metrics query`",
+		"- automatically chooses compiler-rs line or group input based on the returned series layout",
+		"- prints the compiler-rs analysis JSON",
+	)
+}
+
+func opPkgHelp() string {
+	return cloudHelp("Work with on-premise / OP collected-data packages.")
+}
+
+func slowQueryHelp() string {
+	return helpBlock(
+		"Query slow queries from the retained Clinic data plane.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"",
+		"Optional environment:",
+		"- CLINIC_SLOWQUERY_ORDER_BY",
+		"- CLINIC_SLOWQUERY_LIMIT",
+		"- CLINIC_SLOWQUERY_DESC",
+		"- CLINIC_SLOWQUERY_DIGEST",
+		"- CLINIC_SLOWQUERY_FIELDS",
+		"",
+		"Flags:",
+		"- --order-by for server-side sorting",
+		"- --limit for max returned records",
+		"- --desc for descending sort order",
+		"- --digest to switch from record search to sample lookup",
+		"- --fields for comma-separated sample fields",
+		"",
+		"Notes:",
+		"- default order-by is `query_time`",
+		"- default limit is `100`",
+		"- shared capability for both cloud and non-cloud / OP clusters",
+		"- cloud queries go directly to the retained slowquery API and do not need item selection",
+		"- non-cloud / OP queries automatically select a matching collected bundle in the current time window",
+		"- when selecting an OP bundle, slowquery prefers bundles containing the log.slow collector when available",
+		"- without `--digest`, `slowquery` returns retained slow query records",
+		"- with `--digest`, `slowquery` returns concrete sample rows for that digest",
+		"- OP sample queries keep source_ref as item-scoped provenance; connection_id is a sample locator",
+	)
+}
+
+func opPkgDownloadHelp() string {
+	return helpBlock(
+		"Download one collected data bundle for non-cloud / OP deployments.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"",
+		"Optional environment:",
+		"- CLINIC_OUTPUT_PATH for data download",
+		"",
+		"Notes:",
+		"- cloud clusters are not supported",
+		"- bundle selection is automatic inside the SDK",
+		"- when no range is provided, download chooses the latest collected bundle",
+	)
+}
+
+func cloudDiagnosticDownloadHelp() string {
+	return helpBlock(
+		"Download one cloud diagnostic artifact by storage key.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"- CLINIC_DIAGNOSTIC_KEY",
+		"",
+		"Optional environment:",
+		"- CLINIC_OUTPUT_PATH for artifact download",
+	)
+}
+
+func cloudProfilingDownloadHelp() string {
+	return helpBlock(
+		"Download one cloud profiling artifact.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"- CLINIC_PROFILE_TS",
+		"- CLINIC_PROFILE_TYPE",
+		"- CLINIC_PROFILE_COMPONENT",
+		"- CLINIC_PROFILE_ADDRESS",
+		"",
+		"Optional environment:",
+		"- CLINIC_PROFILE_DATA_FORMAT",
+		"- CLINIC_OUTPUT_PATH for artifact download",
+	)
+}
+
+func cloudHelp(noun string) string {
 	return helpBlock(
 		noun,
 		"",
 		"Required environment:",
-		"- CLINIC_API_KEY",
-		"- CLINIC_CLUSTER_ID",
-		"",
-		"Notes:",
-		"- item selection is automatic inside the SDK",
-		"- set CLINIC_VERBOSE_LOGS=true for request lifecycle logs",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
 	)
 }
-func cloudHelp(noun string) string {
-	return helpBlock(noun, "", "Required environment:", "- CLINIC_API_KEY", "- CLINIC_CLUSTER_ID")
+
+func cloudLogsGroupHelp() string {
+	return cloudHelp("Search cloud logs.")
 }
-func slowQueryDetailHelp() string {
+
+func cloudLogsHelp() string {
 	return helpBlock(
-		"Get one slow-query detail.",
+		"Search cloud logs with automatic mode selection.",
 		"",
 		"Required environment:",
-		"- CLINIC_API_KEY",
-		"- CLINIC_CLUSTER_ID",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
 		"",
-		"Lookup modes:",
-		"- preferred: CLINIC_SLOWQUERY_ID",
-		"- tiup uses CLINIC_RANGE_START and CLINIC_RANGE_END",
-		"- cloud uses DIGEST + CONNECTION_ID + TIMESTAMP",
+		"Mode selection:",
+		"- if --label or CLINIC_LOKI_LABEL is present, query label values",
+		"- else if any query-range inputs are present, run a ranged log query",
+		"- else, list available log labels",
+		"",
+		"Flags:",
+		"- --label for label-values",
+		"- --query for the LogQL query",
+		"- --limit for max returned log lines",
+		"- --direction with one of: forward, backward",
+		"",
+		"Notes:",
+		"- cloud only",
+		"- --label cannot be combined with query-range inputs",
+	)
+}
+
+func cloudProfilingsGroupHelp() string {
+	return cloudHelp("Work with cloud profiling snapshots.")
+}
+
+func cloudProfilingsListHelp() string {
+	return helpBlock(
+		"List cloud profiling groups in the current time window.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"",
+		"Notes:",
+		"- cloud only",
+		"- profiling artifact download uses cloud-profilings download",
+	)
+}
+
+func cloudEventHelp() string {
+	return cloudHelp("Search cloud cluster events.")
+}
+
+func cloudEventsHelp() string {
+	return helpBlock(
+		"Search cluster events for cloud clusters.",
+		"",
+		"Output:",
+		"- raw JSON from the activityhub events API",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"",
+		"Flags:",
+		"- --name for activity name search",
+		"- --severity with one of: info, warning, debug, critical",
+		"",
+		"Notes:",
+		"- cloud only",
+		"- non-cloud deployments are not supported",
+	)
+}
+
+func cloudPlanReplayersGroupHelp() string {
+	return cloudHelp("Work with cloud plan replayer artifacts.")
+}
+
+func cloudPlanReplayersHelp() string {
+	return cloudHelp("List cloud plan replayer artifacts.")
+}
+
+func cloudOOMRecordsGroupHelp() string {
+	return cloudHelp("Work with cloud OOM record artifacts.")
+}
+
+func cloudOOMRecordsHelp() string {
+	return cloudHelp("List cloud OOM record artifacts.")
+}
+
+func opPkgsHelp() string {
+	return helpBlock(
+		"List collected data packages for non-cloud / OP deployments.",
+		"",
+		"Required environment:",
+		"- CLINIC_PORTAL_URL",
+		"- CLINIC_API_KEY for clinic.pingcap.com",
+		"- CLINIC_CN_API_KEY for clinic.pingcap.com.cn",
+		"",
+		"Output:",
+		"- one line per collected bundle with item id, file name, time range, and available data types",
+		"",
+		"Notes:",
+		"- cloud clusters are not supported",
 	)
 }

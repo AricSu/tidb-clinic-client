@@ -5,3 +5,12 @@
 .env.*
 !.env.example
 bin/
+
+# compiler-rs workspace artifacts
+compiler-rs/target/
+compiler-rs/**/__pycache__/
+compiler-rs/**/*.pyc
+compiler-rs/**/*.pyo
+compiler-rs/**/*.swp
+compiler-rs/tools/regression_viewer_py/generated/
+compiler-rs/tools/regression_viewer_py/.venv/

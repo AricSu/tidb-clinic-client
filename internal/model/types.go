@@ -140,7 +140,6 @@ type Config struct {
 	AuthProvider         AuthProvider
 	Timeout              time.Duration
 	RebuildProbeInterval time.Duration
-	VerboseRequestLogs   bool
 	RetryMax             int
 	RetryBackoff         time.Duration
 	RetryJitter          time.Duration
@@ -155,7 +154,6 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Timeout:              20 * time.Second,
 		RebuildProbeInterval: 10 * time.Second,
 		RetryMax:             2,
 		RetryBackoff:         250 * time.Millisecond,
@@ -165,6 +163,53 @@ func DefaultConfig() Config {
 		TLSHandshake:         10 * time.Second,
 	}
 }
+
+func MergeConfig(cfg Config) Config {
+	merged := DefaultConfig()
+	if strings.TrimSpace(cfg.BaseURL) != "" {
+		merged.BaseURL = strings.TrimSpace(cfg.BaseURL)
+	}
+	if strings.TrimSpace(cfg.BearerToken) != "" {
+		merged.BearerToken = strings.TrimSpace(cfg.BearerToken)
+	}
+	if cfg.AuthProvider != nil {
+		merged.AuthProvider = cfg.AuthProvider
+	}
+	if cfg.Timeout > 0 {
+		merged.Timeout = cfg.Timeout
+	}
+	if cfg.RebuildProbeInterval > 0 {
+		merged.RebuildProbeInterval = cfg.RebuildProbeInterval
+	}
+	if cfg.RetryMax != 0 {
+		merged.RetryMax = cfg.RetryMax
+	}
+	if cfg.RetryBackoff != 0 {
+		merged.RetryBackoff = cfg.RetryBackoff
+	}
+	if cfg.RetryJitter != 0 {
+		merged.RetryJitter = cfg.RetryJitter
+	}
+	if cfg.MaxIdleConns != 0 {
+		merged.MaxIdleConns = cfg.MaxIdleConns
+	}
+	if cfg.MaxIdlePerHost != 0 {
+		merged.MaxIdlePerHost = cfg.MaxIdlePerHost
+	}
+	if cfg.TLSHandshake != 0 {
+		merged.TLSHandshake = cfg.TLSHandshake
+	}
+	merged.DisableKeepAlive = cfg.DisableKeepAlive
+	if cfg.HTTPClient != nil {
+		merged.HTTPClient = cfg.HTTPClient
+	}
+	if cfg.Logger != nil {
+		merged.Logger = cfg.Logger
+	}
+	merged.Hooks = cfg.Hooks
+	return merged
+}
+
 func (c Config) Valid() error {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return errors.New("clinic api base URL is required")
@@ -178,9 +223,6 @@ func (c Config) Valid() error {
 	}
 	if strings.TrimSpace(c.BearerToken) == "" && c.AuthProvider == nil {
 		return errors.New("clinic api bearer token or auth provider is required")
-	}
-	if c.Timeout <= 0 {
-		return errors.New("clinic api timeout must be positive")
 	}
 	if c.RebuildProbeInterval <= 0 {
 		return errors.New("clinic api rebuild probe interval must be positive")
@@ -201,111 +243,31 @@ const (
 	TargetPlatformTiUPCluster TargetPlatform = "tiup-cluster"
 )
 
-type CapabilityName string
-
-const (
-	CapabilityClusterDetail   CapabilityName = "cluster_detail"
-	CapabilityTopology        CapabilityName = "topology"
-	CapabilityEvents          CapabilityName = "events"
-	CapabilityMetrics         CapabilityName = "metrics"
-	CapabilityLogs            CapabilityName = "logs"
-	CapabilitySQLQuery        CapabilityName = "sql_query"
-	CapabilitySchema          CapabilityName = "schema"
-	CapabilityTopSQL          CapabilityName = "topsql"
-	CapabilitySlowQuery       CapabilityName = "slow_query"
-	CapabilitySQLStatements   CapabilityName = "sql_statements"
-	CapabilityConfigs         CapabilityName = "configs"
-	CapabilityProfiling       CapabilityName = "profiling"
-	CapabilityDiagnosticFiles CapabilityName = "diagnostic_files"
-)
-
-type CapabilityScope string
-
-const (
-	CapabilityScopeCluster CapabilityScope = "cluster"
-)
-
-type CapabilityStability string
-
-const (
-	CapabilityStabilityStable      CapabilityStability = "stable"
-	CapabilityStabilityPlaceholder CapabilityStability = "placeholder"
-)
-
-type CapabilityDescriptor struct {
-	Name                 CapabilityName
-	Available            bool
-	Reason               string
-	Scope                CapabilityScope
-	Stability            CapabilityStability
-	RequiresParentTarget bool
-	RequiresLiveCluster  bool
-	TierConstraints      []string
-}
-type ClusterRecord struct {
-	ClusterID    string
-	Name         string
-	OrgID        string
-	ClusterType  string
-	TenantID     string
-	ProjectID    string
-	Provider     string
-	Region       string
-	DeployType   string
-	DeployTypeV2 string
-	ParentID     string
-	Status       string
-	Deleted      bool
-}
-type ClusterMetadata struct {
-	Platform     TargetPlatform
-	ClusterID    string
-	OrgID        string
-	ClusterType  string
-	Provider     string
-	Region       string
-	DeployType   string
-	DeployTypeV2 string
-	ParentID     string
-	Status       string
-	Deleted      bool
-}
-type ClusterCapabilities struct {
-	Cluster      ClusterMetadata
-	Capabilities []CapabilityDescriptor
-}
-
-func (c ClusterCapabilities) Lookup(name CapabilityName) (CapabilityDescriptor, bool) {
-	for _, item := range c.Capabilities {
-		if item.Name == name {
-			return item, true
-		}
-	}
-	return CapabilityDescriptor{}, false
-}
-
 type QueryMetadata struct {
-	RowCount      int64
-	BytesScanned  int64
-	ExecutionTime string
-	QueryID       string
-	Engine        string
-	Vendor        string
-	Region        string
-	Partial       bool
-	Warnings      []string
-	Raw           map[string]any
+	RowCount      int64          `json:"rowCount"`
+	BytesScanned  int64          `json:"bytesScanned"`
+	ExecutionTime string         `json:"executionTime"`
+	QueryID       string         `json:"queryID"`
+	Engine        string         `json:"engine"`
+	Vendor        string         `json:"vendor"`
+	Region        string         `json:"region"`
+	Partial       bool           `json:"partial"`
+	Warnings      []string       `json:"warnings,omitempty"`
+	Raw           map[string]any `json:"raw,omitempty"`
 }
 type RetainedDataRef struct {
 	ItemID    string
 	SourceRef string
 }
-type ClusterSearchQuery struct {
-	Query       string
-	ClusterID   string
-	ShowDeleted bool
-	Limit       int
-	Page        int
+type CollectedDataItem struct {
+	ItemID     string   `json:"itemID"`
+	Filename   string   `json:"filename"`
+	Collectors []string `json:"collectors,omitempty"`
+	HaveLog    bool     `json:"haveLog"`
+	HaveMetric bool     `json:"haveMetric"`
+	HaveConfig bool     `json:"haveConfig"`
+	StartTime  int64    `json:"startTime"`
+	EndTime    int64    `json:"endTime"`
 }
 type TimeSeriesQuery struct {
 	Query   string
@@ -315,6 +277,17 @@ type TimeSeriesQuery struct {
 	End     int64
 	Step    string
 	Timeout string
+}
+
+type MetricsCompileQuery struct {
+	Query            string   `json:"query"`
+	Start            int64    `json:"start"`
+	End              int64    `json:"end"`
+	Step             string   `json:"step"`
+	Timeout          string   `json:"timeout,omitempty"`
+	MetricID         string   `json:"metricID,omitempty"`
+	LabelsOfInterest []string `json:"labelsOfInterest,omitempty"`
+	SourceRef        string   `json:"sourceRef,omitempty"`
 }
 
 func (q TimeSeriesQuery) Clone() TimeSeriesQuery {
@@ -330,12 +303,6 @@ func (q TimeSeriesQuery) ComparedTo(offsetSeconds int64) (TimeSeriesQuery, TimeS
 	return base, compare
 }
 
-type LogQuery struct {
-	Query     string
-	Time      int64
-	Limit     int
-	Direction string
-}
 type LogRangeQuery struct {
 	Query     string
 	Start     int64
@@ -343,41 +310,11 @@ type LogRangeQuery struct {
 	Limit     int
 	Direction string
 }
-type LogLabelsQuery struct {
-	Start int64
-	End   int64
-}
-type LogLabelValuesQuery struct {
-	LabelName string
-	Start     int64
-	End       int64
-}
-type LogSearchQuery struct {
-	StartTime int64
-	EndTime   int64
-	Pattern   string
-	Limit     int
-}
-type SQLQuery struct {
-	SQL     string
-	Timeout int
-}
-type SchemaQuery struct {
-	Tables []string
-}
-type TopSQLSummaryQuery struct {
-	Component string
-	Instance  string
-	Start     string
-	End       string
-	Top       int
-	Window    string
-	GroupBy   string
-}
-type TopSlowQueriesQuery struct {
-	Start   string
-	Hours   int
+type SlowQueryQuery struct {
+	Start   int64
+	End     int64
 	OrderBy string
+	Desc    bool
 	Limit   int
 }
 type SlowQuerySamplesQuery struct {
@@ -389,36 +326,14 @@ type SlowQuerySamplesQuery struct {
 	Desc    bool
 	Fields  []string
 }
-type SlowQueryDetailQuery struct {
-	ID           string
-	Start        string
-	End          string
-	Digest       string
-	ConnectionID string
-	Timestamp    string
+type LogLabelsQuery struct {
+	Start int64
+	End   int64
 }
-type SlowQueryRecordsQuery struct {
-	StartTime int64
-	EndTime   int64
-	OrderBy   string
-	Desc      bool
-	Limit     int
-}
-type SQLStatementsQuery struct {
-	SQL     string
-	Timeout int
-	Start   string
-	End     string
-}
-type ProfileActionTokenRequest struct {
-	Timestamp   int64
-	ProfileType string
-	Component   string
-	Address     string
-	DataFormat  string
-}
-type ProfileDownloadRequest struct {
-	Token string
+type LogLabelValuesQuery struct {
+	LabelName string
+	Start     int64
+	End       int64
 }
 type ProfileFetchRequest struct {
 	Timestamp   int64
@@ -430,59 +345,90 @@ type ProfileFetchRequest struct {
 type DiagnosticDownloadRequest struct {
 	Key string
 }
-type ConfigQuery struct{}
+type CollectedDataDownloadRequest struct {
+	StartTime int64
+	EndTime   int64
+}
 type SeriesKind string
 
 const (
-	SeriesKindRange   SeriesKind = "range"
-	SeriesKindInstant SeriesKind = "instant"
-	SeriesKindSet     SeriesKind = "set"
+	SeriesKindRange SeriesKind = "range"
 )
 
 type SeriesPoint struct {
-	Timestamp int64
-	Value     string
+	Timestamp int64  `json:"timestamp"`
+	Value     string `json:"value"`
 }
 type Series struct {
-	Labels map[string]string
-	Values []SeriesPoint
+	Labels map[string]string `json:"labels,omitempty"`
+	Values []SeriesPoint     `json:"values,omitempty"`
 }
 type SeriesResult struct {
-	Kind      SeriesKind
-	IsPartial bool
-	Series    []Series
-	Metadata  QueryMetadata
+	Kind      SeriesKind    `json:"kind"`
+	IsPartial bool          `json:"isPartial"`
+	Series    []Series      `json:"series,omitempty"`
+	Metadata  QueryMetadata `json:"metadata,omitempty"`
+}
+
+type CompiledTimeseriesProblemRange struct {
+	StartTSSecs int64 `json:"start_ts_secs"`
+	EndTSSecs   int64 `json:"end_ts_secs"`
+}
+
+type CompiledTimeseriesEvent struct {
+	Kind        string  `json:"kind,omitempty"`
+	Score       float64 `json:"score,omitempty"`
+	StartTSSecs int64   `json:"start_ts_secs"`
+	EndTSSecs   int64   `json:"end_ts_secs"`
+}
+
+type CompiledTimeseriesDigest struct {
+	MetricID     string                          `json:"metric_id,omitempty"`
+	Scope        string                          `json:"scope,omitempty"`
+	SubjectID    string                          `json:"subject_id,omitempty"`
+	Summary      string                          `json:"summary,omitempty"`
+	State        string                          `json:"state,omitempty"`
+	Trend        string                          `json:"trend,omitempty"`
+	ProblemRange *CompiledTimeseriesProblemRange `json:"problem_range,omitempty"`
+	TopEvents    []CompiledTimeseriesEvent       `json:"top_events,omitempty"`
+	SourceRefs   []string                        `json:"source_refs,omitempty"`
 }
 type StreamValue struct {
-	Timestamp string
-	Line      string
+	Timestamp string `json:"timestamp"`
+	Line      string `json:"line"`
+}
+type SlowQueryRecord struct {
+	Digest     string   `json:"digest"`
+	SQLText    string   `json:"sqlText"`
+	QueryTime  float64  `json:"queryTime"`
+	ExecCount  int64    `json:"execCount"`
+	User       string   `json:"user"`
+	DB         string   `json:"db"`
+	TableNames []string `json:"tableNames,omitempty"`
+	IndexNames []string `json:"indexNames,omitempty"`
+	SourceRef  string   `json:"sourceRef"`
+}
+type SlowQueryResult struct {
+	Total   int               `json:"total"`
+	Records []SlowQueryRecord `json:"records,omitempty"`
 }
 type Stream struct {
-	Labels map[string]string
-	Values []StreamValue
+	Labels map[string]string `json:"labels,omitempty"`
+	Values []StreamValue     `json:"values,omitempty"`
 }
 type StreamResult struct {
-	Status   string
-	Streams  []Stream
-	Metadata QueryMetadata
-}
-type TableResult struct {
-	Columns  []string
-	Rows     []map[string]any
-	Metadata QueryMetadata
+	Status   string        `json:"status"`
+	Streams  []Stream      `json:"streams,omitempty"`
+	Metadata QueryMetadata `json:"metadata,omitempty"`
 }
 type ListResult struct {
-	Total    int
-	Items    []map[string]any
-	Metadata QueryMetadata
-}
-type ObjectResult struct {
-	Fields   map[string]any
-	Metadata QueryMetadata
+	Total    int              `json:"total"`
+	Items    []map[string]any `json:"items,omitempty"`
+	Metadata QueryMetadata    `json:"metadata,omitempty"`
 }
 type BlobResult struct {
-	Filename    string
-	ContentType string
-	Bytes       []byte
+	Filename    string `json:"filename"`
+	ContentType string `json:"contentType"`
+	Bytes       []byte `json:"bytes,omitempty"`
 }
 type DownloadedArtifact = BlobResult

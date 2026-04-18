@@ -13,11 +13,10 @@ import (
 type ClustersClient struct{ client *Client }
 type MetricsClient struct{ handle *ClusterHandle }
 type LogClient struct{ handle *ClusterHandle }
-type SQLAnalyticsClient struct{ handle *ClusterHandle }
-type ConfigsClient struct{ handle *ClusterHandle }
+type SlowQueryClient struct{ handle *ClusterHandle }
+type CollectedDataClient struct{ handle *ClusterHandle }
 type ProfilingClient struct{ handle *ClusterHandle }
 type DiagnosticsClient struct{ handle *ClusterHandle }
-type CapabilitiesClient struct{ handle *ClusterHandle }
 type Client struct {
 	cfg      model.Config
 	clinic   clinicService
@@ -25,7 +24,7 @@ type Client struct {
 }
 
 func NewClient(baseURL string, opts ...ClientOpt) (*Client, error) {
-	cfg := model.DefaultConfig()
+	cfg := model.MergeConfig(model.Config{})
 	cfg.BaseURL = strings.TrimSpace(baseURL)
 	for _, opt := range opts {
 		if opt != nil {
@@ -35,49 +34,7 @@ func NewClient(baseURL string, opts ...ClientOpt) (*Client, error) {
 	return NewClientWithConfig(cfg)
 }
 func NewClientWithConfig(cfg model.Config) (*Client, error) {
-	merged := model.DefaultConfig()
-	if strings.TrimSpace(cfg.BaseURL) != "" {
-		merged.BaseURL = strings.TrimSpace(cfg.BaseURL)
-	}
-	if strings.TrimSpace(cfg.BearerToken) != "" {
-		merged.BearerToken = strings.TrimSpace(cfg.BearerToken)
-	}
-	if cfg.AuthProvider != nil {
-		merged.AuthProvider = cfg.AuthProvider
-	}
-	if cfg.Timeout > 0 {
-		merged.Timeout = cfg.Timeout
-	}
-	if cfg.RebuildProbeInterval > 0 {
-		merged.RebuildProbeInterval = cfg.RebuildProbeInterval
-	}
-	merged.VerboseRequestLogs = cfg.VerboseRequestLogs
-	if cfg.RetryMax != 0 {
-		merged.RetryMax = cfg.RetryMax
-	}
-	if cfg.RetryBackoff != 0 {
-		merged.RetryBackoff = cfg.RetryBackoff
-	}
-	if cfg.RetryJitter != 0 {
-		merged.RetryJitter = cfg.RetryJitter
-	}
-	if cfg.MaxIdleConns != 0 {
-		merged.MaxIdleConns = cfg.MaxIdleConns
-	}
-	if cfg.MaxIdlePerHost != 0 {
-		merged.MaxIdlePerHost = cfg.MaxIdlePerHost
-	}
-	if cfg.TLSHandshake != 0 {
-		merged.TLSHandshake = cfg.TLSHandshake
-	}
-	merged.DisableKeepAlive = cfg.DisableKeepAlive
-	if cfg.HTTPClient != nil {
-		merged.HTTPClient = cfg.HTTPClient
-	}
-	if cfg.Logger != nil {
-		merged.Logger = cfg.Logger
-	}
-	merged.Hooks = cfg.Hooks
+	merged := model.MergeConfig(cfg)
 	if err := merged.Valid(); err != nil {
 		return nil, err
 	}
@@ -126,11 +83,6 @@ func WithRebuildProbeInterval(d time.Duration) ClientOpt {
 		cfg.RebuildProbeInterval = d
 	}
 }
-func WithVerboseRequestLogs(enabled bool) ClientOpt {
-	return func(cfg *model.Config) {
-		cfg.VerboseRequestLogs = enabled
-	}
-}
 func WithRetry(max int, backoff, jitter time.Duration) ClientOpt {
 	return func(cfg *model.Config) {
 		cfg.RetryMax = max
@@ -172,46 +124,30 @@ func WithTransportConfig(fn func(*http.Transport)) ClientOpt {
 type clusterResolver interface {
 	ResolveCluster(ctx context.Context, selector ClusterSelector) (apitypes.CloudCluster, error)
 	ResolveOrg(ctx context.Context, orgID string) (apitypes.Org, error)
-	SearchClusters(ctx context.Context, query ClusterSearchQuery) ([]apitypes.CloudCluster, error)
 	ClusterDetail(ctx context.Context, target controlPlaneTarget) (apitypes.CloudClusterDetail, error)
-	Topology(ctx context.Context, target resolvedClusterTarget) (apitypes.CloudClusterDetail, error)
-	Events(ctx context.Context, target controlPlaneTarget, startTime, endTime int64) (apitypes.CloudEventsResult, error)
-	EventDetail(ctx context.Context, target controlPlaneTarget, eventID string) (map[string]any, error)
 }
 type catalogService interface {
 	ListCatalogData(ctx context.Context, requestContext apitypes.RequestContext) ([]apitypes.ClinicDataItem, error)
-	EnsureCatalogDataReadable(ctx context.Context, requestContext apitypes.RequestContext, item apitypes.ClinicDataItem) error
+	EnsureCatalogDataReadable(ctx context.Context, requestContext apitypes.RequestContext, item apitypes.ClinicDataItem, dataType apitypes.CatalogDataType) error
+	DownloadCollectedData(ctx context.Context, requestContext apitypes.RequestContext, item apitypes.ClinicDataItem) (DownloadedArtifact, error)
 }
 type metricsService interface {
 	QueryRange(ctx context.Context, target metricsTarget, query TimeSeriesQuery) (MetricQueryRangeResult, error)
-	QueryInstant(ctx context.Context, target metricsTarget, query TimeSeriesQuery) (MetricQueryInstantResult, error)
-	QuerySeries(ctx context.Context, target metricsTarget, query TimeSeriesQuery) (MetricQuerySeriesResult, error)
+	CompileRange(ctx context.Context, target metricsTarget, query MetricsCompileQuery) ([]CompiledTimeseriesDigest, error)
 }
 type logsService interface {
-	QueryLogs(ctx context.Context, target logsTarget, query LogQuery) (apitypes.LokiQueryResult, error)
 	QueryLogsRange(ctx context.Context, target logsTarget, query LogRangeQuery) (apitypes.LokiQueryResult, error)
 	LogLabels(ctx context.Context, target logsTarget, query LogLabelsQuery) (apitypes.LokiLabelsResult, error)
 	LogLabelValues(ctx context.Context, target logsTarget, query LogLabelValuesQuery) (apitypes.LokiLabelsResult, error)
-	SearchLogs(ctx context.Context, requestContext apitypes.RequestContext, itemID string, query LogSearchQuery) (LogSearchResult, error)
 }
-type sqlAnalyticsService interface {
-	QuerySQL(ctx context.Context, target sqlTarget, query SQLQuery) (apitypes.DataProxyQueryResult, error)
-	SchemaSQL(ctx context.Context, target sqlTarget, query SchemaQuery) (apitypes.DataProxySchemaResult, error)
-	TopSQLSummary(ctx context.Context, target resolvedClusterTarget, query TopSQLSummaryQuery) ([]apitypes.CloudTopSQL, error)
-	TopSlowQueries(ctx context.Context, target resolvedClusterTarget, query TopSlowQueriesQuery) ([]apitypes.CloudTopSlowQuery, error)
-	SlowQuerySamples(ctx context.Context, target resolvedClusterTarget, query SlowQuerySamplesQuery) ([]apitypes.CloudSlowQueryListEntry, error)
-	SlowQueryDetail(ctx context.Context, target resolvedClusterTarget, query SlowQueryDetailQuery) (map[string]any, error)
-	SQLStatements(ctx context.Context, target sqlTarget, query SQLStatementsQuery) (apitypes.DataProxyQueryResult, error)
-	SlowQueryRecords(ctx context.Context, requestContext apitypes.RequestContext, itemID string, query SlowQueryRecordsQuery) (apitypes.SlowQueryRecordsResult, error)
-}
-type configsService interface {
-	GetConfig(ctx context.Context, requestContext apitypes.RequestContext, itemID string, query ConfigQuery) (ConfigResult, error)
+type slowQueryService interface {
+	QueryCloudSlowQueries(ctx context.Context, target apitypes.CloudNGMTarget, query SlowQueryQuery) (SlowQueryResult, error)
+	QueryCloudSlowQuerySamples(ctx context.Context, target apitypes.CloudNGMTarget, query SlowQuerySamplesQuery, startTime, endTime int64) (SlowQuerySamplesResult, error)
+	QuerySlowQueries(ctx context.Context, requestContext apitypes.RequestContext, item apitypes.ClinicDataItem, query SlowQueryQuery) (SlowQueryResult, error)
+	QuerySlowQuerySamples(ctx context.Context, requestContext apitypes.RequestContext, item apitypes.ClinicDataItem, query SlowQuerySamplesQuery, startTime, endTime int64) (SlowQuerySamplesResult, error)
 }
 type profilingService interface {
 	ListProfileGroups(ctx context.Context, target profilingTarget, beginTime, endTime int64) (apitypes.CloudProfileGroupsResult, error)
-	ProfileDetail(ctx context.Context, target profilingTarget, timestamp int64) (apitypes.CloudProfileGroupDetail, error)
-	ProfileActionToken(ctx context.Context, target profilingTarget, req ProfileActionTokenRequest) (string, error)
-	DownloadProfile(ctx context.Context, target profilingTarget, req ProfileDownloadRequest) (DownloadedArtifact, error)
 	FetchProfile(ctx context.Context, target profilingTarget, req ProfileFetchRequest) (DownloadedArtifact, error)
 }
 type diagnosticsService interface {
@@ -224,8 +160,7 @@ type clinicService interface {
 	catalogService
 	metricsService
 	logsService
-	sqlAnalyticsService
-	configsService
+	slowQueryService
 	profilingService
 	diagnosticsService
 }

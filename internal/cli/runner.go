@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	clinicapi "github.com/AricSu/tidb-clinic-client"
+	rawapi "github.com/AricSu/tidb-clinic-client/internal/clinicapi"
+	"github.com/AricSu/tidb-clinic-client/internal/compiler"
 	"io"
 	"log"
 	"path/filepath"
@@ -12,34 +15,82 @@ import (
 	"time"
 )
 
-func newSDKClient(cfg cliConfig, logger *log.Logger) (*clinicapi.Client, error) {
+func newSDKClient(cfg cliConfig, hooks clinicapi.Hooks) (*clinicapi.Client, error) {
 	clientCfg := clinicapi.Config{
-		BaseURL:            cfg.BaseURL,
-		BearerToken:        cfg.APIKey,
-		Timeout:            cfg.Timeout,
-		Logger:             logger,
-		VerboseRequestLogs: cfg.VerboseLogs,
+		BaseURL:     cfg.BaseURL,
+		BearerToken: cfg.APIKey,
+		Hooks:       hooks,
 	}
 	if cfg.RebuildProbeInterval > 0 {
 		clientCfg.RebuildProbeInterval = cfg.RebuildProbeInterval
 	}
 	return clinicapi.NewClientWithConfig(clientCfg)
 }
-func withSDKClient(ctx context.Context, cfg cliConfig, logger *log.Logger, run func(context.Context, *clinicapi.Client) error) error {
-	client, err := newSDKClient(cfg, logger)
+func newRawAPIClient(cfg cliConfig, hooks rawapi.Hooks) (*rawapi.Client, error) {
+	clientCfg := rawapi.Config{
+		BaseURL:     cfg.BaseURL,
+		BearerToken: cfg.APIKey,
+		Hooks:       hooks,
+	}
+	if cfg.RebuildProbeInterval > 0 {
+		clientCfg.RebuildProbeInterval = cfg.RebuildProbeInterval
+	}
+	return rawapi.NewClientWithConfig(clientCfg)
+}
+func withSDKClient(ctx context.Context, cfg cliConfig, hooks clinicapi.Hooks, run func(context.Context, *clinicapi.Client) error) error {
+	client, err := newSDKClient(cfg, hooks)
 	if err != nil {
 		return err
 	}
 	return run(ctx, client)
 }
-func withResolvedCluster(ctx context.Context, cfg cliConfig, logger *log.Logger, run func(context.Context, *clinicapi.ClusterHandle) error) error {
-	return withSDKClient(ctx, cfg, logger, func(ctx context.Context, client *clinicapi.Client) error {
+func withRawAPIClient(ctx context.Context, cfg cliConfig, hooks rawapi.Hooks, run func(context.Context, *rawapi.Client) error) error {
+	client, err := newRawAPIClient(cfg, hooks)
+	if err != nil {
+		return err
+	}
+	return run(ctx, client)
+}
+
+func withResolvedCluster(ctx context.Context, cfg cliConfig, hooks clinicapi.Hooks, run func(context.Context, *clinicapi.ClusterHandle) error) error {
+	return withSDKClient(ctx, cfg, hooks, func(ctx context.Context, client *clinicapi.Client) error {
 		cluster, err := cfg.resolveHandle(ctx, client)
 		if err != nil {
 			return err
 		}
 		return run(ctx, cluster)
 	})
+}
+
+func withResolvedClusterAndRawClient(
+	ctx context.Context,
+	cfg cliConfig,
+	sdkHooks clinicapi.Hooks,
+	rawHooks rawapi.Hooks,
+	run func(context.Context, *clinicapi.ClusterHandle, *rawapi.Client) error,
+) error {
+	return withResolvedCluster(ctx, cfg, sdkHooks, func(ctx context.Context, cluster *clinicapi.ClusterHandle) error {
+		return withRawAPIClient(ctx, cfg, rawHooks, func(ctx context.Context, rawClient *rawapi.Client) error {
+			return run(ctx, cluster, rawClient)
+		})
+	})
+}
+func requireCloudCluster(cluster *clinicapi.ClusterHandle, endpoint, capability string) error {
+	if cluster == nil {
+		return &clinicapi.Error{
+			Class:    clinicapi.ErrBackend,
+			Endpoint: endpoint,
+			Message:  "resolved cluster is nil",
+		}
+	}
+	if cluster.Platform() == clinicapi.TargetPlatformCloud {
+		return nil
+	}
+	return &clinicapi.Error{
+		Class:    clinicapi.ErrUnsupported,
+		Endpoint: endpoint,
+		Message:  strings.TrimSpace(capability) + " are only available for cloud clusters; non-cloud deployments are not supported",
+	}
 }
 func identityConfig(cfg cliConfig) cliConfig { return cfg }
 func runLoadedClient[C any](
@@ -55,10 +106,29 @@ func runLoadedClient[C any](
 	if err != nil {
 		return err
 	}
-	return withSDKClient(context.Background(), base(cfg), logger, func(ctx context.Context, client *clinicapi.Client) error {
+	return withSDKClient(context.Background(), base(cfg), clinicapi.Hooks{}, func(ctx context.Context, client *clinicapi.Client) error {
 		return run(ctx, client, cfg, out)
 	})
 }
+
+func runLoadedRawClient[C any](
+	lookup func(string) (string, bool),
+	now func() time.Time,
+	logger *log.Logger,
+	out io.Writer,
+	load func(func(string) (string, bool), func() time.Time) (C, error),
+	base func(C) cliConfig,
+	run func(context.Context, *rawapi.Client, C, io.Writer) error,
+) error {
+	cfg, err := load(lookup, now)
+	if err != nil {
+		return err
+	}
+	return withRawAPIClient(context.Background(), base(cfg), rawapi.Hooks{}, func(ctx context.Context, client *rawapi.Client) error {
+		return run(ctx, client, cfg, out)
+	})
+}
+
 func runLoadedCluster[C any](
 	lookup func(string) (string, bool),
 	now func() time.Time,
@@ -68,12 +138,42 @@ func runLoadedCluster[C any](
 	base func(C) cliConfig,
 	run func(context.Context, *clinicapi.ClusterHandle, C, io.Writer) error,
 ) error {
+	return runLoadedClusterWithHooks(lookup, now, logger, out, clinicapi.Hooks{}, load, base, run)
+}
+func runLoadedClusterWithHooks[C any](
+	lookup func(string) (string, bool),
+	now func() time.Time,
+	logger *log.Logger,
+	out io.Writer,
+	hooks clinicapi.Hooks,
+	load func(func(string) (string, bool), func() time.Time) (C, error),
+	base func(C) cliConfig,
+	run func(context.Context, *clinicapi.ClusterHandle, C, io.Writer) error,
+) error {
 	cfg, err := load(lookup, now)
 	if err != nil {
 		return err
 	}
-	return withResolvedCluster(context.Background(), base(cfg), logger, func(ctx context.Context, cluster *clinicapi.ClusterHandle) error {
+	return withResolvedCluster(context.Background(), base(cfg), hooks, func(ctx context.Context, cluster *clinicapi.ClusterHandle) error {
 		return run(ctx, cluster, cfg, out)
+	})
+}
+
+func runLoadedClusterAndRawClient[C any](
+	lookup func(string) (string, bool),
+	now func() time.Time,
+	logger *log.Logger,
+	out io.Writer,
+	load func(func(string) (string, bool), func() time.Time) (C, error),
+	base func(C) cliConfig,
+	run func(context.Context, *clinicapi.ClusterHandle, *rawapi.Client, C, io.Writer) error,
+) error {
+	cfg, err := load(lookup, now)
+	if err != nil {
+		return err
+	}
+	return withResolvedClusterAndRawClient(context.Background(), base(cfg), clinicapi.Hooks{}, rawapi.Hooks{}, func(ctx context.Context, cluster *clinicapi.ClusterHandle, rawClient *rawapi.Client) error {
+		return run(ctx, cluster, rawClient, cfg, out)
 	})
 }
 func runMetricsQueryRange(
@@ -92,111 +192,140 @@ func runMetricsQueryRange(
 		if err != nil {
 			return err
 		}
-		writeMetricQueryRangeSummary(out, cfg.Query, cfg.Start, cfg.End, cfg.Step, result)
-		return nil
+		return writeJSON(out, result)
 	})
 }
-func runMetricsQueryInstant(
+func runMetricsCompile(
 	lookup func(string) (string, bool),
 	now func() time.Time,
 	logger *log.Logger,
 	out io.Writer,
 ) error {
-	return runLoadedCluster(lookup, now, logger, out, loadMetricsQueryConfig, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		result, err := cluster.Metrics.QueryInstant(ctx, clinicapi.TimeSeriesQuery{
+	return runLoadedCluster(lookup, now, logger, out, loadMetricsCompileConfig, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
+		result, err := cluster.Metrics.QueryRange(ctx, clinicapi.TimeSeriesQuery{
 			Query: cfg.Query,
-			Time:  cfg.Time,
-		})
-		if err != nil {
-			return err
-		}
-		writeMetricQueryInstantSummary(out, cfg.Query, cfg.Time, result)
-		return nil
-	})
-}
-func runMetricsQuerySeries(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadMetricsSeriesConfig, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		result, err := cluster.Metrics.QuerySeries(ctx, clinicapi.TimeSeriesQuery{
-			Match: cfg.Match,
 			Start: cfg.Start,
 			End:   cfg.End,
+			Step:  cfg.Step,
 		})
 		if err != nil {
 			return err
 		}
-		writeMetricQuerySeriesSummary(out, cfg.Match, cfg.Start, cfg.End, result)
-		return nil
+		compiled, err := compiler.CompileMetricQueryRange(ctx, clinicapi.MetricsCompileQuery{
+			Query: cfg.Query,
+			Start: cfg.Start,
+			End:   cfg.End,
+			Step:  cfg.Step,
+		}, result)
+		if err != nil {
+			return err
+		}
+		var decoded any
+		if err := json.Unmarshal(compiled, &decoded); err != nil {
+			_, writeErr := fmt.Fprintln(out, string(compiled))
+			return writeErr
+		}
+		return writeJSON(out, decoded)
 	})
 }
-func runClusterDetail(
+func runSlowQuery(
+	lookup func(string) (string, bool),
+	now func() time.Time,
+	logger *log.Logger,
+	out io.Writer,
+) error {
+	progress := newRetainedSlowQueriesProgress(logger)
+	defer progress.Close()
+	return runLoadedClusterWithHooks(lookup, now, logger, out, progress.Hooks(), loadSlowQueryConfig, func(cfg slowQueryConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg slowQueryConfig, out io.Writer) error {
+		if strings.TrimSpace(cfg.Digest) != "" {
+			result, err := cluster.SlowQueries.Samples(ctx, clinicapi.SlowQuerySamplesQuery{
+				Digest:  cfg.Digest,
+				Start:   strconv.FormatInt(cfg.Base.Start, 10),
+				End:     strconv.FormatInt(cfg.Base.End, 10),
+				OrderBy: cfg.OrderBy,
+				Limit:   cfg.Limit,
+				Desc:    cfg.Desc,
+				Fields:  append([]string(nil), cfg.Fields...),
+			})
+			if err != nil {
+				return err
+			}
+			return writeJSON(out, result)
+		}
+		result, err := cluster.SlowQueries.Query(ctx, clinicapi.SlowQueryQuery{
+			Start:   cfg.Base.Start,
+			End:     cfg.Base.End,
+			OrderBy: cfg.OrderBy,
+			Desc:    cfg.Desc,
+			Limit:   cfg.Limit,
+		})
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, result)
+	})
+}
+func runCollectedDataDownload(
+	lookup func(string) (string, bool),
+	now func() time.Time,
+	logger *log.Logger,
+	out io.Writer,
+) error {
+	cfg, err := loadCollectedDataDownloadConfig(lookup, now)
+	if err != nil {
+		return err
+	}
+	progress := newDataDownloadProgress(logger)
+	defer progress.Close()
+	return withResolvedCluster(context.Background(), cfg.Base, progress.Hooks(), func(ctx context.Context, cluster *clinicapi.ClusterHandle) error {
+		artifact, err := cluster.CollectedData.Download(ctx, clinicapi.CollectedDataDownloadRequest{
+			StartTime: cfg.Base.Start,
+			EndTime:   cfg.Base.End,
+		})
+		if err != nil {
+			return err
+		}
+		outputPath := outputPathOrDefault(cfg.OutputPath, filepath.Join(".", firstNonEmptyString(artifact.Filename, "collected-data")))
+		return writeArtifact(out, outputPath, artifact)
+	})
+}
+func runCollectedDataList(
 	lookup func(string) (string, bool),
 	now func() time.Time,
 	logger *log.Logger,
 	out io.Writer,
 ) error {
 	return runLoadedCluster(lookup, now, logger, out, loadConfigFromEnv, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		detail, err := cluster.Detail(ctx)
+		items, err := cluster.CollectedData.List(ctx)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "cluster_id=%s\n", detail.Cluster.ClusterID)
-		fmt.Fprintf(out, "detail_id=%s\n", detail.ID)
-		fmt.Fprintf(out, "name=%s\n", detail.Name)
-		fmt.Fprintf(out, "topology=%s\n", detail.Topology())
-		return nil
+		return writeJSON(out, struct {
+			Total int                           `json:"total"`
+			Items []clinicapi.CollectedDataItem `json:"items,omitempty"`
+		}{
+			Total: len(items),
+			Items: items,
+		})
 	})
 }
-func runClusterSearch(
+func runClusterInfo(
 	lookup func(string) (string, bool),
 	now func() time.Time,
 	logger *log.Logger,
 	out io.Writer,
 ) error {
-	return runLoadedClient(lookup, now, logger, out, loadClusterSearchConfig, func(cfg cloudClusterSearchConfig) cliConfig { return cfg.Base }, func(ctx context.Context, client *clinicapi.Client, cfg cloudClusterSearchConfig, out io.Writer) error {
-		items, err := client.Clusters.Search(ctx, clinicapi.ClusterSearchQuery{
-			Query:       cfg.Query,
-			ClusterID:   cfg.Base.ClusterID,
-			ShowDeleted: cfg.ShowDeleted,
-			Limit:       cfg.Limit,
-			Page:        cfg.Page,
+	return runLoadedRawClient(lookup, now, logger, out, loadConfigFromEnv, identityConfig, func(ctx context.Context, rawClient *rawapi.Client, cfg cliConfig, out io.Writer) error {
+		raw, err := rawClient.GetClusterDetailRaw(ctx, rawapi.CloudClusterDetailRequest{
+			Target: rawapi.CloudTarget{
+				OrgID:     cfg.OrgID,
+				ClusterID: cfg.ClusterID,
+			},
 		})
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "clusters=%d\n", len(items))
-		for i, item := range items {
-			fmt.Fprintf(out, "cluster[%d] id=%s name=%s org_id=%s tenant_id=%s cluster_type=%s provider=%s region=%s deploy_type=%s deploy_type_v2=%s parent_id=%s status=%s\n",
-				i, item.ClusterID, item.Name, item.OrgID, item.TenantID, item.ClusterType, item.Provider, item.Region, item.DeployType, item.DeployTypeV2, item.ParentID, item.Status)
-		}
-		return nil
-	})
-}
-func runClusterTopology(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadConfigFromEnv, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		topology, err := cluster.Topology(ctx)
-		if err != nil {
-			return err
-		}
-		deployType := topology.Cluster.DeployTypeV2
-		if deployType == "" {
-			deployType = topology.Cluster.DeployType
-		}
-		fmt.Fprintf(out, "cluster_id=%s\n", topology.Cluster.ClusterID)
-		fmt.Fprintf(out, "deploy_type=%s\n", deployType)
-		fmt.Fprintf(out, "topology_id=%s\n", topology.ID)
-		fmt.Fprintf(out, "topology_name=%s\n", topology.Name)
-		fmt.Fprintf(out, "topology=%s\n", topology.Topology())
-		return nil
+		return writeJSON(out, raw)
 	})
 }
 func runCloudEventsQuery(
@@ -205,369 +334,70 @@ func runCloudEventsQuery(
 	logger *log.Logger,
 	out io.Writer,
 ) error {
-	return runLoadedCluster(lookup, now, logger, out, loadConfigFromEnv, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		result, err := cluster.Events(ctx, cfg.Start, cfg.End)
-		if err != nil {
+	return runLoadedClusterAndRawClient(lookup, now, logger, out, loadCloudEventListConfig, func(cfg cloudEventListConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, rawClient *rawapi.Client, cfg cloudEventListConfig, out io.Writer) error {
+		if err := requireCloudCluster(cluster, "cloud-events.search", "events"); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "total=%d\n", result.Total)
-		for i, event := range result.Events {
-			fmt.Fprintf(
-				out,
-				"event[%d] id=%s name=%s display_name=%s create_time=%d\n",
-				i,
-				event.EventID,
-				event.Name,
-				event.DisplayName,
-				event.CreateTime,
-			)
-		}
-		return nil
-	})
-}
-func runCloudEventsDetail(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudEventDetailConfig, func(cfg cloudEventDetailConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudEventDetailConfig, out io.Writer) error {
-		result, err := cluster.EventDetail(ctx, cfg.EventID)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "event_id=%s\n", cfg.EventID)
-		fmt.Fprintf(out, "detail=%v\n", result.Detail)
-		return nil
-	})
-}
-func runCloudLokiQuery(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudLokiQueryConfig, func(cfg cloudLokiQueryConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudLokiQueryConfig, out io.Writer) error {
-		result, err := cluster.Logs.Query(ctx, clinicapi.LogQuery{
-			Query:     cfg.Query,
-			Time:      cfg.Base.Time,
-			Limit:     cfg.Limit,
-			Direction: cfg.Direction,
-		})
-		if err != nil {
-			return err
-		}
-		writeLokiSummary(out, result)
-		return nil
-	})
-}
-func runCloudLokiQueryRange(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudLokiQueryConfig, func(cfg cloudLokiQueryConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudLokiQueryConfig, out io.Writer) error {
-		result, err := cluster.Logs.QueryRange(ctx, clinicapi.LogRangeQuery{
-			Query:     cfg.Query,
-			Start:     cfg.Base.Start,
-			End:       cfg.Base.End,
-			Limit:     cfg.Limit,
-			Direction: cfg.Direction,
-		})
-		if err != nil {
-			return err
-		}
-		writeLokiSummary(out, result)
-		return nil
-	})
-}
-func runCloudLokiLabels(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadConfigFromEnv, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		result, err := cluster.Logs.Labels(ctx, clinicapi.LogLabelsQuery{
-			Start: cfg.Start,
-			End:   cfg.End,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "labels=%v\n", listValues(result))
-		return nil
-	})
-}
-func runCloudLokiLabelValues(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudLokiLabelValuesConfig, func(cfg cloudLokiLabelValuesConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudLokiLabelValuesConfig, out io.Writer) error {
-		result, err := cluster.Logs.LabelValues(ctx, clinicapi.LogLabelValuesQuery{
-			LabelName: cfg.LabelName,
-			Start:     cfg.Base.Start,
-			End:       cfg.Base.End,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "label=%s values=%v\n", cfg.LabelName, listValues(result))
-		return nil
-	})
-}
-func runRetainedLogsSearch(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadRetainedItemRequestConfig, func(cfg retainedItemRequestConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg retainedItemRequestConfig, out io.Writer) error {
-		result, err := cluster.Logs.Search(ctx, clinicapi.LogSearchQuery{
+		raw, err := rawClient.QueryEventsRaw(ctx, rawapi.CloudEventsRequest{
+			Target: rawapi.CloudTarget{
+				OrgID:     cluster.OrgID(),
+				ClusterID: cluster.ClusterID(),
+			},
 			StartTime: cfg.Base.Start,
 			EndTime:   cfg.Base.End,
-			Pattern:   cfg.Pattern,
-			Limit:     cfg.Limit,
+			Name:      cfg.Name,
+			Severity:  cfg.Severity,
 		})
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "total=%d\n", result.Total)
-		for i, record := range result.Items {
-			fmt.Fprintf(
-				out,
-				"log[%d] timestamp=%s component=%s level=%s source_ref=%s message=%s\n",
-				i,
-				toString(record["timestamp"]),
-				toString(record["component"]),
-				toString(record["level"]),
-				firstNonEmptyString(record["source_ref"], record["item_id"]),
-				toString(record["message"]),
-			)
-		}
-		return nil
+		return writeJSON(out, raw)
 	})
 }
-func runCloudDataProxyQuery(
+
+func runCloudLogs(
 	lookup func(string) (string, bool),
 	now func() time.Time,
 	logger *log.Logger,
 	out io.Writer,
 ) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudDataProxyQueryConfig, func(cfg cloudDataProxyQueryConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudDataProxyQueryConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.Query(ctx, clinicapi.SQLQuery{
-			SQL:     cfg.SQL,
-			Timeout: cfg.Timeout,
-		})
-		if err != nil {
-			return err
+	return runLoadedCluster(lookup, now, logger, out, loadCloudLogsConfig, func(cfg cloudLogsConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudLogsConfig, out io.Writer) error {
+		switch cfg.Mode {
+		case cloudLogsModeLabelValues:
+			result, err := cluster.Logs.LabelValues(ctx, clinicapi.LogLabelValuesQuery{
+				LabelName: cfg.LabelName,
+				Start:     cfg.Base.Start,
+				End:       cfg.Base.End,
+			})
+			if err != nil {
+				return err
+			}
+			return writeJSON(out, result)
+		case cloudLogsModeQueryRange:
+			result, err := cluster.Logs.QueryRange(ctx, clinicapi.LogRangeQuery{
+				Query:     cfg.Query,
+				Start:     cfg.Base.Start,
+				End:       cfg.Base.End,
+				Limit:     cfg.Limit,
+				Direction: cfg.Direction,
+			})
+			if err != nil {
+				return err
+			}
+			return writeJSON(out, result)
+		default:
+			result, err := cluster.Logs.Labels(ctx, clinicapi.LogLabelsQuery{
+				Start: cfg.Base.Start,
+				End:   cfg.Base.End,
+			})
+			if err != nil {
+				return err
+			}
+			return writeJSON(out, result)
 		}
-		writeTableResult(out, result)
-		return nil
 	})
 }
-func runCloudDataProxySchema(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudDataProxySchemaConfig, func(cfg cloudDataProxySchemaConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudDataProxySchemaConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.Schema(ctx, clinicapi.SchemaQuery{
-			Tables: cfg.Tables,
-		})
-		if err != nil {
-			return err
-		}
-		writeTableResult(out, result)
-		return nil
-	})
-}
-func runCapabilitySQLStatements(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudDataProxyQueryConfig, func(cfg cloudDataProxyQueryConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudDataProxyQueryConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.SQLStatements(ctx, clinicapi.SQLStatementsQuery{
-			SQL:     cfg.SQL,
-			Timeout: cfg.Timeout,
-			Start:   strconv.FormatInt(cfg.Base.Start, 10),
-			End:     strconv.FormatInt(cfg.Base.End, 10),
-		})
-		if err != nil {
-			return err
-		}
-		writeTableResult(out, result)
-		return nil
-	})
-}
-func runCloudTopSQLSummary(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudTopSQLConfig, func(cfg cloudTopSQLConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudTopSQLConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.TopSQLSummary(ctx, clinicapi.TopSQLSummaryQuery{
-			Component: cfg.Component,
-			Instance:  cfg.Instance,
-			Start:     cfg.Start,
-			End:       cfg.End,
-			Top:       cfg.Top,
-			Window:    cfg.Window,
-			GroupBy:   cfg.GroupBy,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "total=%d\n", len(result.Rows))
-		for i, row := range result.Rows {
-			fmt.Fprintf(
-				out,
-				"topsql[%d] digest=%s cpu_time_ms=%f exec_count_per_sec=%f duration_per_exec_ms=%f query=%s\n",
-				i,
-				toString(row["sql_digest"]),
-				toFloat64(row["cpu_time_ms"]),
-				toFloat64(row["exec_count_per_sec"]),
-				toFloat64(row["duration_per_exec_ms"]),
-				toString(row["sql_text"]),
-			)
-		}
-		return nil
-	})
-}
-func runCloudTopSlowQueries(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudTopSlowQueriesConfig, func(cfg cloudTopSlowQueriesConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudTopSlowQueriesConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.TopSlowQueries(ctx, clinicapi.TopSlowQueriesQuery{
-			Start:   cfg.Start,
-			Hours:   cfg.Hours,
-			OrderBy: cfg.OrderBy,
-			Limit:   cfg.Limit,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "total=%d\n", len(result.Rows))
-		for i, row := range result.Rows {
-			fmt.Fprintf(
-				out,
-				"slowquery_top[%d] digest=%s db=%s count=%d sum_latency=%f max_latency=%f avg_latency=%f query=%s\n",
-				i,
-				toString(row["sql_digest"]),
-				toString(row["db"]),
-				toInt64(row["count"]),
-				toFloat64(row["sum_latency"]),
-				toFloat64(row["max_latency"]),
-				toFloat64(row["avg_latency"]),
-				toString(row["sql_text"]),
-			)
-		}
-		return nil
-	})
-}
-func runCloudSlowQueriesList(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudSlowQueryListConfig, func(cfg cloudSlowQueryListConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudSlowQueryListConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.SlowQuerySamples(ctx, clinicapi.SlowQuerySamplesQuery{
-			Digest:  cfg.Digest,
-			Start:   cfg.Start,
-			End:     cfg.End,
-			OrderBy: cfg.OrderBy,
-			Limit:   cfg.Limit,
-			Desc:    cfg.Desc,
-			Fields:  cfg.Fields,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "total=%d\n", len(result.Items))
-		for i, row := range result.Items {
-			itemID := firstNonEmptyString(row["item_id"], row["source_ref"])
-			fmt.Fprintf(
-				out,
-				"slowquery_list[%d] id=%s item_id=%s digest=%s timestamp=%s query_time=%f connection_id=%s query=%s\n",
-				i,
-				toString(row["id"]),
-				itemID,
-				toString(row["digest"]),
-				toString(row["timestamp"]),
-				toFloat64(row["query_time"]),
-				toString(row["connection_id"]),
-				toString(row["query"]),
-			)
-		}
-		return nil
-	})
-}
-func runCloudSlowQueriesDetail(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudSlowQueryDetailConfig, func(cfg cloudSlowQueryDetailConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudSlowQueryDetailConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.SlowQueryDetail(ctx, clinicapi.SlowQueryDetailQuery{
-			ID:           cfg.ID,
-			Start:        strconv.FormatInt(cfg.Base.Start, 10),
-			End:          strconv.FormatInt(cfg.Base.End, 10),
-			Digest:       cfg.Digest,
-			ConnectionID: cfg.ConnectionID,
-			Timestamp:    cfg.Timestamp,
-		})
-		if err != nil {
-			return err
-		}
-		itemID := firstNonEmptyString(result.Fields["item_id"], result.Fields["source_ref"])
-		writeOptionalKeyValue(out, "id", toString(result.Fields["id"]))
-		writeOptionalKeyValue(out, "item_id", itemID)
-		writeOptionalKeyValue(out, "digest", toString(result.Fields["digest"]))
-		writeOptionalKeyValue(out, "connection_id", toString(result.Fields["connection_id"]))
-		writeOptionalKeyValue(out, "timestamp", toString(result.Fields["timestamp"]))
-		fmt.Fprintf(out, "detail=%v\n", result.Fields)
-		return nil
-	})
-}
-func runRetainedSlowQueriesQuery(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadRetainedItemRequestConfig, func(cfg retainedItemRequestConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg retainedItemRequestConfig, out io.Writer) error {
-		result, err := cluster.SQLAnalytics.SlowQueryRecords(ctx, clinicapi.SlowQueryRecordsQuery{
-			StartTime: cfg.Base.Start,
-			EndTime:   cfg.Base.End,
-			OrderBy:   cfg.OrderBy,
-			Desc:      cfg.Desc,
-			Limit:     cfg.Limit,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "request_window=%d..%d order_by=%s desc=%t limit=%d\n", cfg.Base.Start, cfg.Base.End, cfg.OrderBy, cfg.Desc, cfg.Limit)
-		fmt.Fprintf(out, "total=%d\n", len(result.Rows))
-		for i, record := range result.Rows {
-			fmt.Fprintf(
-				out,
-				"slowquery[%d] digest=%s query_time=%f exec_count=%d db=%s user=%s source_ref=%s query=%s\n",
-				i,
-				toString(record["digest"]),
-				toFloat64(record["query_time"]),
-				toInt64(record["exec_count"]),
-				toString(record["db"]),
-				toString(record["user"]),
-				firstNonEmptyString(record["source_ref"], record["item_id"]),
-				toString(record["sql_text"]),
-			)
-		}
-		return nil
-	})
-}
-func runRetainedConfigsGet(lookup func(string) (string, bool), now func() time.Time, logger *log.Logger, out io.Writer) error {
-	return runLoadedCluster(lookup, now, logger, out, loadRetainedItemRequestConfig, func(cfg retainedItemRequestConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg retainedItemRequestConfig, out io.Writer) error {
-		result, err := cluster.Configs.Get(ctx, clinicapi.ConfigQuery{})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "total=%d\n", len(result.Rows))
-		for i, entry := range result.Rows {
-			fmt.Fprintf(
-				out,
-				"config[%d] component=%s key=%s value=%s source_ref=%s\n",
-				i,
-				toString(entry["component"]),
-				toString(entry["key"]),
-				toString(entry["value"]),
-				firstNonEmptyString(entry["source_ref"], entry["item_id"]),
-			)
-		}
-		return nil
-	})
-}
+
 func runCloudProfilingGroups(
 	lookup func(string) (string, bool),
 	now func() time.Time,
@@ -579,30 +409,7 @@ func runCloudProfilingGroups(
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "groups=%d\n", len(result.Items))
-		for i, group := range result.Items {
-			fmt.Fprintf(out, "group[%d] ts=%d state=%s duration=%d component_num=%v\n", i, toInt64(group["timestamp"]), toString(group["state"]), toInt64(group["profile_duration_secs"]), group["component_num"])
-		}
-		return nil
-	})
-}
-func runCloudProfilingDetail(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadCloudProfilingDetailConfig, func(cfg cloudProfilingDetailConfig) cliConfig { return cfg.Base }, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cloudProfilingDetailConfig, out io.Writer) error {
-		result, err := cluster.Profiling.Detail(ctx, cfg.Timestamp)
-		if err != nil {
-			return err
-		}
-		items := objectItems(result.Fields, "target_profiles")
-		fmt.Fprintf(out, "target_profiles=%d\n", len(items))
-		for i, item := range items {
-			fmt.Fprintf(out, "target_profile[%d] component=%s address=%s profile_type=%s state=%s error=%s\n", i, toString(item["component"]), toString(item["address"]), toString(item["profile_type"]), toString(item["state"]), toString(item["error"]))
-		}
-		return nil
+		return writeJSON(out, result)
 	})
 }
 func runCloudProfilingDownload(
@@ -664,15 +471,7 @@ func runCloudDiagnosticList(
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "records=%d\n", len(result.Items))
-		for i, record := range result.Items {
-			files := anySliceAsMaps(record["files"])
-			fmt.Fprintf(out, "record[%d] files=%d\n", i, len(files))
-			for j, file := range files {
-				fmt.Fprintf(out, "record[%d].file[%d] name=%s key=%s size=%d download_url=%s\n", i, j, toString(file["name"]), toString(file["key"]), toInt64(file["size"]), toString(file["download_url"]))
-			}
-		}
-		return nil
+		return writeJSON(out, result)
 	})
 }
 func runCloudDiagnosticDownload(
@@ -692,76 +491,6 @@ func runCloudDiagnosticDownload(
 		return writeArtifact(out, outputPath, artifact)
 	})
 }
-func runCapabilityDiscover(
-	lookup func(string) (string, bool),
-	now func() time.Time,
-	logger *log.Logger,
-	out io.Writer,
-) error {
-	return runLoadedCluster(lookup, now, logger, out, loadConfigFromEnv, identityConfig, func(ctx context.Context, cluster *clinicapi.ClusterHandle, cfg cliConfig, out io.Writer) error {
-		result, err := cluster.Capabilities.Discover(ctx)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "cluster_id=%s\n", result.Cluster.ClusterID)
-		deployType := result.Cluster.DeployTypeV2
-		if strings.TrimSpace(deployType) == "" {
-			deployType = result.Cluster.DeployType
-		}
-		fmt.Fprintf(out, "deploy_type=%s\n", deployType)
-		fmt.Fprintf(out, "deleted=%t\n", result.Cluster.Deleted)
-		fmt.Fprintf(out, "capabilities=%d\n", len(result.Capabilities))
-		for i, item := range result.Capabilities {
-			fmt.Fprintf(
-				out,
-				"capability[%d] name=%s available=%t scope=%s stability=%s requires_parent_target=%t requires_live_cluster=%t tier_constraints=%s reason=%s\n",
-				i,
-				item.Name,
-				item.Available,
-				item.Scope,
-				item.Stability,
-				item.RequiresParentTarget,
-				item.RequiresLiveCluster,
-				strings.Join(item.TierConstraints, ","),
-				item.Reason,
-			)
-		}
-		return nil
-	})
-}
-func writeLokiSummary(out io.Writer, result clinicapi.LogQueryResult) {
-	fmt.Fprintf(out, "status=%s result_type=streams streams=%d\n", result.Status, len(result.Streams))
-	for i, stream := range result.Streams {
-		fmt.Fprintf(out, "stream[%d] labels=%v values=%d\n", i, stream.Labels, len(stream.Values))
-	}
-}
-func writeTableResult(out io.Writer, result clinicapi.TableResult) {
-	fmt.Fprintf(out, "columns=%v\n", result.Columns)
-	fmt.Fprintf(out, "rows=%d\n", len(result.Rows))
-	fmt.Fprintf(
-		out,
-		"metadata row_count=%d bytes_scanned=%d execution_time=%s query_id=%s engine=%s vendor=%s region=%s\n",
-		result.Metadata.RowCount,
-		result.Metadata.BytesScanned,
-		result.Metadata.ExecutionTime,
-		result.Metadata.QueryID,
-		result.Metadata.Engine,
-		result.Metadata.Vendor,
-		result.Metadata.Region,
-	)
-	for i, row := range result.Rows {
-		fmt.Fprintf(out, "row[%d]=%v\n", i, row)
-	}
-}
-func listValues(result clinicapi.LogLabelsResult) []string {
-	values := make([]string, 0, len(result.Items))
-	for _, item := range result.Items {
-		if value := strings.TrimSpace(toString(item["value"])); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
-}
 func firstNonEmptyString(values ...any) string {
 	for _, value := range values {
 		if text := strings.TrimSpace(toString(value)); text != "" {
@@ -769,103 +498,6 @@ func firstNonEmptyString(values ...any) string {
 		}
 	}
 	return ""
-}
-func toInt64(v any) int64 {
-	switch value := v.(type) {
-	case int:
-		return int64(value)
-	case int8:
-		return int64(value)
-	case int16:
-		return int64(value)
-	case int32:
-		return int64(value)
-	case int64:
-		return value
-	case uint:
-		return int64(value)
-	case uint8:
-		return int64(value)
-	case uint16:
-		return int64(value)
-	case uint32:
-		return int64(value)
-	case uint64:
-		return int64(value)
-	case float32:
-		return int64(value)
-	case float64:
-		return int64(value)
-	case string:
-		parsed, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-		return parsed
-	default:
-		parsed, _ := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(v)), 10, 64)
-		return parsed
-	}
-}
-func toFloat64(v any) float64 {
-	switch value := v.(type) {
-	case float32:
-		return float64(value)
-	case float64:
-		return value
-	case int:
-		return float64(value)
-	case int8:
-		return float64(value)
-	case int16:
-		return float64(value)
-	case int32:
-		return float64(value)
-	case int64:
-		return float64(value)
-	case uint:
-		return float64(value)
-	case uint8:
-		return float64(value)
-	case uint16:
-		return float64(value)
-	case uint32:
-		return float64(value)
-	case uint64:
-		return float64(value)
-	case string:
-		parsed, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
-		return parsed
-	default:
-		parsed, _ := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(v)), 64)
-		return parsed
-	}
-}
-func objectItems(fields map[string]any, key string) []map[string]any {
-	if fields == nil {
-		return nil
-	}
-	return anySliceAsMaps(fields[key])
-}
-func anySliceAsMaps(v any) []map[string]any {
-	switch value := v.(type) {
-	case []map[string]any:
-		return value
-	case []any:
-		out := make([]map[string]any, 0, len(value))
-		for _, item := range value {
-			if mapped, ok := item.(map[string]any); ok {
-				out = append(out, mapped)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-func writeOptionalKeyValue(out io.Writer, key, value string) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return
-	}
-	fmt.Fprintf(out, "%s=%s\n", key, trimmed)
 }
 func defaultDiagnosticFilename(key string) string {
 	base := filepath.Base(strings.TrimSpace(key))

@@ -17,18 +17,18 @@ func TestLoadConfigFromEnvRequiresAPIKeyAndClusterID(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "CLINIC_API_KEY") {
-		t.Fatalf("expected missing api key error, got=%v", err)
+	if !strings.Contains(err.Error(), "CLINIC_PORTAL_URL") {
+		t.Fatalf("expected missing portal url error, got=%v", err)
 	}
 }
 
-func TestLoadConfigFromEnvAppliesDefaults(t *testing.T) {
+func TestLoadConfigFromEnvAppliesDefaultsFromPortalURL(t *testing.T) {
 	lookup := func(key string) (string, bool) {
 		switch key {
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com/portal/#/orgs/1372813089196930499/clusters/10989049060142230334", true
 		case "CLINIC_API_KEY":
 			return "token", true
-		case "CLINIC_CLUSTER_ID":
-			return "cluster-9", true
 		default:
 			return "", false
 		}
@@ -40,9 +40,15 @@ func TestLoadConfigFromEnvAppliesDefaults(t *testing.T) {
 		t.Fatalf("loadConfigFromEnv failed: %v", err)
 	}
 	if cfg.BaseURL != "https://clinic.pingcap.com" {
-		t.Fatalf("expected default base url, got=%q", cfg.BaseURL)
+		t.Fatalf("expected portal base url, got=%q", cfg.BaseURL)
 	}
-	if cfg.Query != "sum(tidb_server_connections)" {
+	if cfg.OrgID != "1372813089196930499" {
+		t.Fatalf("unexpected org id: %q", cfg.OrgID)
+	}
+	if cfg.ClusterID != "10989049060142230334" {
+		t.Fatalf("unexpected cluster id: %q", cfg.ClusterID)
+	}
+	if cfg.Query != "histogram_quantile(0.999, sum(rate(tidb_server_handle_query_duration_seconds_bucket[1m])) by (le, instance))" {
 		t.Fatalf("unexpected default query: %q", cfg.Query)
 	}
 	if cfg.Step != "1m" {
@@ -54,30 +60,19 @@ func TestLoadConfigFromEnvAppliesDefaults(t *testing.T) {
 	if cfg.End != 1772777400 {
 		t.Fatalf("unexpected default end: %d", cfg.End)
 	}
-	if cfg.Timeout != 20*time.Second {
-		t.Fatalf("unexpected default timeout: %v", cfg.Timeout)
-	}
 }
 
-func TestLoadConfigFromEnvRespectsOptionalOverrides(t *testing.T) {
+func TestLoadConfigFromEnvRespectsOptionalQueryOverrides(t *testing.T) {
 	lookup := func(key string) (string, bool) {
 		switch key {
-		case "CLINIC_API_BASE_URL":
-			return "https://clinic.pingcap.com", true
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com/portal/#/orgs/1372813089196930348/clusters/7372714695339837431?from=1773547800&to=1773548100", true
 		case "CLINIC_API_KEY":
 			return "token", true
-		case "CLINIC_CLUSTER_ID":
-			return "cluster-2", true
 		case "CLINIC_METRICS_QUERY":
 			return "sum(tidb_server_maxprocs)", true
-		case "CLINIC_RANGE_START":
-			return "1772776500", true
-		case "CLINIC_RANGE_END":
-			return "1772777100", true
 		case "CLINIC_RANGE_STEP":
 			return "30s", true
-		case "CLINIC_TIMEOUT_SEC":
-			return "7", true
 		default:
 			return "", false
 		}
@@ -91,49 +86,163 @@ func TestLoadConfigFromEnvRespectsOptionalOverrides(t *testing.T) {
 	if cfg.Query != "sum(tidb_server_maxprocs)" {
 		t.Fatalf("unexpected query override: %q", cfg.Query)
 	}
-	if len(cfg.Match) != 0 {
-		t.Fatalf("expected no matchers by default, got=%v", cfg.Match)
-	}
-	if cfg.Time != 1772777100 {
-		t.Fatalf("unexpected default query time: %d", cfg.Time)
-	}
 	if cfg.Step != "30s" {
 		t.Fatalf("unexpected step override: %q", cfg.Step)
 	}
-	if cfg.Start != 1772776500 || cfg.End != 1772777100 {
-		t.Fatalf("unexpected range override: start=%d end=%d", cfg.Start, cfg.End)
-	}
-	if cfg.Timeout != 7*time.Second {
-		t.Fatalf("unexpected timeout override: %v", cfg.Timeout)
+	if cfg.Start != 1773547800 || cfg.End != 1773548100 {
+		t.Fatalf("expected range from portal url: start=%d end=%d", cfg.Start, cfg.End)
 	}
 }
 
-func TestLoadConfigFromEnvParsesMetricMatchersAndQueryTime(t *testing.T) {
+func TestLoadConfigFromEnvUsesGlobalAPIKeyForCloudPortalURL(t *testing.T) {
 	lookup := func(key string) (string, bool) {
 		switch key {
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com/portal/#/orgs/1372813089196930499/clusters/10989049060142230334", true
 		case "CLINIC_API_KEY":
-			return "token", true
-		case "CLINIC_CLUSTER_ID":
-			return "cluster-9", true
-		case "CLINIC_METRICS_MATCH":
-			return "metric_a{instance=\"tidb-0\"}\nmetric_a{instance=\"tidb-1\"}", true
-		case "CLINIC_QUERY_TIME":
-			return "1772777000", true
+			return "token-global", true
 		default:
 			return "", false
 		}
 	}
+
 	cfg, err := loadConfigFromEnv(lookup, func() time.Time {
 		return time.Unix(1772777400, 0)
 	})
 	if err != nil {
 		t.Fatalf("loadConfigFromEnv failed: %v", err)
 	}
-	if len(cfg.Match) != 2 || cfg.Match[0] != `metric_a{instance="tidb-0"}` || cfg.Match[1] != `metric_a{instance="tidb-1"}` {
-		t.Fatalf("unexpected matchers: %+v", cfg.Match)
+	if cfg.BaseURL != "https://clinic.pingcap.com" {
+		t.Fatalf("unexpected base url: %q", cfg.BaseURL)
 	}
-	if cfg.Time != 1772777000 {
-		t.Fatalf("unexpected query time: %d", cfg.Time)
+	if cfg.ClusterID != "10989049060142230334" {
+		t.Fatalf("unexpected cluster id: %q", cfg.ClusterID)
+	}
+	if cfg.APIKey != "token-global" {
+		t.Fatalf("unexpected api key: %q", cfg.APIKey)
+	}
+	if cfg.Start != 1772776800 || cfg.End != 1772777400 {
+		t.Fatalf("expected default range when portal URL has no time window, got %d..%d", cfg.Start, cfg.End)
+	}
+}
+
+func TestLoadConfigFromEnvUsesCNAPIKeyForCNTiUPPortalURL(t *testing.T) {
+	lookup := func(key string) (string, bool) {
+		switch key {
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com.cn/portal/#/orgs/1075/clusters/7460723698814898616?from=1767679200&to=1767682800", true
+		case "CLINIC_CN_API_KEY":
+			return "token-cn", true
+		default:
+			return "", false
+		}
+	}
+
+	cfg, err := loadConfigFromEnv(lookup, func() time.Time {
+		return time.Unix(1772777400, 0)
+	})
+	if err != nil {
+		t.Fatalf("loadConfigFromEnv failed: %v", err)
+	}
+	if cfg.BaseURL != "https://clinic.pingcap.com.cn" {
+		t.Fatalf("unexpected base url: %q", cfg.BaseURL)
+	}
+	if cfg.OrgID != "1075" {
+		t.Fatalf("unexpected org id: %q", cfg.OrgID)
+	}
+	if cfg.ClusterID != "7460723698814898616" {
+		t.Fatalf("unexpected cluster id: %q", cfg.ClusterID)
+	}
+	if cfg.APIKey != "token-cn" {
+		t.Fatalf("expected cn api key, got %q", cfg.APIKey)
+	}
+	if cfg.Start != 1767679200 || cfg.End != 1767682800 {
+		t.Fatalf("expected range from cn portal URL, got %d..%d", cfg.Start, cfg.End)
+	}
+}
+
+func TestLoadConfigFromEnvRequiresCNAPIKeyForCNPortalURL(t *testing.T) {
+	_, err := loadConfigFromEnv(func(key string) (string, bool) {
+		switch key {
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com.cn/portal/#/orgs/1075/clusters/7460723698814898616?from=1767679200&to=1767682800", true
+		case "CLINIC_API_KEY":
+			return "token-global", true
+		default:
+			return "", false
+		}
+	}, func() time.Time {
+		return time.Unix(1772777400, 0)
+	})
+	if err == nil {
+		t.Fatalf("expected missing cn api key error")
+	}
+	if !strings.Contains(err.Error(), "CLINIC_CN_API_KEY") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfigFromEnvUsesGlobalAPIKeyForGlobalTiUPPortalURL(t *testing.T) {
+	lookup := func(key string) (string, bool) {
+		switch key {
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com/portal/#/orgs/1372813089196930348/clusters/7372714695339837431?from=1773547800&to=1773548100", true
+		case "CLINIC_API_KEY":
+			return "token-global", true
+		default:
+			return "", false
+		}
+	}
+
+	cfg, err := loadConfigFromEnv(lookup, func() time.Time {
+		return time.Unix(1772777400, 0)
+	})
+	if err != nil {
+		t.Fatalf("loadConfigFromEnv failed: %v", err)
+	}
+	if cfg.BaseURL != "https://clinic.pingcap.com" {
+		t.Fatalf("unexpected base url: %q", cfg.BaseURL)
+	}
+	if cfg.OrgID != "1372813089196930348" {
+		t.Fatalf("unexpected org id: %q", cfg.OrgID)
+	}
+	if cfg.ClusterID != "7372714695339837431" {
+		t.Fatalf("unexpected cluster id: %q", cfg.ClusterID)
+	}
+	if cfg.APIKey != "token-global" {
+		t.Fatalf("unexpected api key: %q", cfg.APIKey)
+	}
+	if cfg.Start != 1773547800 || cfg.End != 1773548100 {
+		t.Fatalf("expected range from global tiup portal URL, got %d..%d", cfg.Start, cfg.End)
+	}
+}
+
+func TestLoadConfigFromEnvUsesPortalURLAsSingleTargetInput(t *testing.T) {
+	lookup := func(key string) (string, bool) {
+		switch key {
+		case "CLINIC_PORTAL_URL":
+			return "https://clinic.pingcap.com/portal/#/orgs/1372813089196930348/clusters/7372714695339837431?from=1773547800&to=1773548100", true
+		case "CLINIC_API_KEY":
+			return "token-global", true
+		default:
+			return "", false
+		}
+	}
+
+	cfg, err := loadConfigFromEnv(lookup, func() time.Time {
+		return time.Unix(1772777400, 0)
+	})
+	if err != nil {
+		t.Fatalf("loadConfigFromEnv failed: %v", err)
+	}
+	if cfg.BaseURL != "https://clinic.pingcap.com" {
+		t.Fatalf("expected portal base url, got %q", cfg.BaseURL)
+	}
+	if cfg.ClusterID != "7372714695339837431" {
+		t.Fatalf("expected portal cluster id, got %q", cfg.ClusterID)
+	}
+	if cfg.Start != 1773547800 || cfg.End != 1773548100 {
+		t.Fatalf("expected portal range, got %d..%d", cfg.Start, cfg.End)
 	}
 }
 
@@ -142,7 +251,7 @@ func TestLookupEnvWithDotEnvFallsBackToDotEnvFile(t *testing.T) {
 	path := filepath.Join(dir, ".env")
 	content := strings.Join([]string{
 		"CLINIC_API_KEY=token-from-file",
-		"CLINIC_CLUSTER_ID=cluster-9",
+		"CLINIC_PORTAL_URL=https://clinic.pingcap.com/portal/#/orgs/1372813089196930499/clusters/10989049060142230334",
 		`CLINIC_METRICS_QUERY="sum(rate(foo_total{type='$command'}[1m]))"`,
 		"",
 	}, "\n")
@@ -156,6 +265,9 @@ func TestLookupEnvWithDotEnvFallsBackToDotEnvFile(t *testing.T) {
 
 	if value, ok := lookup("CLINIC_API_KEY"); !ok || value != "token-from-file" {
 		t.Fatalf("unexpected api key: ok=%v value=%q", ok, value)
+	}
+	if value, ok := lookup("CLINIC_PORTAL_URL"); !ok || !strings.Contains(value, "10989049060142230334") {
+		t.Fatalf("unexpected portal url: ok=%v value=%q", ok, value)
 	}
 	if value, ok := lookup("CLINIC_METRICS_QUERY"); !ok || value != "sum(rate(foo_total{type='$command'}[1m]))" {
 		t.Fatalf("unexpected metrics query: ok=%v value=%q", ok, value)

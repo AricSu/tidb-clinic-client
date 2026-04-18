@@ -1,75 +1,86 @@
 package cli
 
 import (
-	"errors"
-	"strconv"
 	"strings"
 	"time"
 )
 
-type cloudEventDetailConfig struct {
-	Base    cliConfig
-	EventID string
-}
-type cloudClusterSearchConfig struct {
-	Base        cliConfig
-	Query       string
-	ShowDeleted bool
-	Limit       int
-	Page        int
+type cloudEventListConfig struct {
+	Base     cliConfig
+	Name     string
+	Severity *int
 }
 
-func loadCloudEventDetailConfig(lookup func(string) (string, bool), now func() time.Time) (cloudEventDetailConfig, error) {
+type eventFlagInputs struct {
+	Name        string
+	NameSet     bool
+	Severity    string
+	SeveritySet bool
+}
+
+var activeEventFlagInputs eventFlagInputs
+
+func pushEventFlagInputs(next eventFlagInputs) func() {
+	previous := activeEventFlagInputs
+	activeEventFlagInputs = next
+	return func() {
+		activeEventFlagInputs = previous
+	}
+}
+
+func loadCloudEventListConfig(lookup func(string) (string, bool), now func() time.Time) (cloudEventListConfig, error) {
 	base, err := loadConfigFromEnv(lookup, now)
 	if err != nil {
-		return cloudEventDetailConfig{}, err
+		return cloudEventListConfig{}, err
 	}
-	eventID, err := requiredEnv(lookup, "CLINIC_EVENT_ID")
-	if err != nil {
-		return cloudEventDetailConfig{}, err
-	}
-	return cloudEventDetailConfig{Base: base, EventID: eventID}, nil
-}
-func loadClusterSearchConfig(lookup func(string) (string, bool), now func() time.Time) (cloudClusterSearchConfig, error) {
-	baseURL, ok := optionalEnv(lookup, "CLINIC_API_BASE_URL")
-	if !ok {
-		baseURL = defaultBaseURL
-	}
-	apiKey, err := requiredEnv(lookup, "CLINIC_API_KEY")
-	if err != nil {
-		return cloudClusterSearchConfig{}, err
-	}
-	query, _ := optionalEnv(lookup, "CLINIC_CLUSTER_QUERY")
-	clusterID, _ := optionalEnv(lookup, "CLINIC_CLUSTER_ID")
-	if strings.TrimSpace(query) == "" && strings.TrimSpace(clusterID) == "" {
-		return cloudClusterSearchConfig{}, errors.New("CLINIC_CLUSTER_QUERY or CLINIC_CLUSTER_ID is required")
-	}
-	showDeleted := true
-	if raw, ok := optionalEnv(lookup, "CLINIC_SHOW_DELETED"); ok {
-		parsed, err := strconv.ParseBool(raw)
+	if activeEventFlagInputs.NameSet || activeEventFlagInputs.SeveritySet {
+		severity, err := parseCloudEventSeverity(activeEventFlagInputs.Severity, "--severity")
 		if err != nil {
-			return cloudClusterSearchConfig{}, &parseEnvError{key: "CLINIC_SHOW_DELETED", message: "must be true or false"}
+			return cloudEventListConfig{}, err
 		}
-		showDeleted = parsed
+		return cloudEventListConfig{
+			Base:     base,
+			Name:     strings.TrimSpace(activeEventFlagInputs.Name),
+			Severity: severity,
+		}, nil
 	}
-	limit, err := optionalPositiveIntEnv(lookup, "CLINIC_LIMIT")
+	name, _ := optionalEnv(lookup, "CLINIC_EVENT_NAME")
+	severity, err := optionalCloudEventSeverity(lookup, "CLINIC_EVENT_SEVERITY")
 	if err != nil {
-		return cloudClusterSearchConfig{}, err
+		return cloudEventListConfig{}, err
 	}
-	page, err := optionalPositiveIntEnv(lookup, "CLINIC_PAGE")
-	if err != nil {
-		return cloudClusterSearchConfig{}, err
-	}
-	return cloudClusterSearchConfig{
-		Base: cliConfig{
-			BaseURL:   baseURL,
-			APIKey:    apiKey,
-			ClusterID: clusterID,
-			Timeout:   defaultTimeout,
-		},
-		Query:       query,
-		ShowDeleted: showDeleted,
-		Limit:       limit,
-		Page:        page,
+	return cloudEventListConfig{
+		Base:     base,
+		Name:     name,
+		Severity: severity,
 	}, nil
+}
+
+func optionalCloudEventSeverity(lookup func(string) (string, bool), key string) (*int, error) {
+	raw, ok := optionalEnv(lookup, key)
+	if !ok {
+		return nil, nil
+	}
+	return parseCloudEventSeverity(raw, key)
+}
+
+func parseCloudEventSeverity(raw, key string) (*int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var value int
+	switch strings.ToLower(raw) {
+	case "info":
+		value = 0
+	case "warning":
+		value = 1
+	case "debug":
+		value = 2
+	case "critical":
+		value = 3
+	default:
+		return nil, &parseEnvError{key: key, message: "must be one of: info, warning, debug, critical"}
+	}
+	return &value, nil
 }

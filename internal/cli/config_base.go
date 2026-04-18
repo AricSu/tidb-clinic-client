@@ -3,72 +3,56 @@ package cli
 import (
 	"context"
 	"fmt"
-	clinicapi "github.com/AricSu/tidb-clinic-client"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	clinicapi "github.com/AricSu/tidb-clinic-client"
 )
 
 const (
-	defaultBaseURL      = "https://clinic.pingcap.com"
-	defaultMetricsQuery = "sum(tidb_server_connections)"
+	defaultMetricsQuery = "histogram_quantile(0.999, sum(rate(tidb_server_handle_query_duration_seconds_bucket[1m])) by (le, instance))"
 	defaultStep         = "1m"
-	defaultTimeout      = 20 * time.Second
 	defaultRangeWindow  = 10 * time.Minute
 )
 
 type cliConfig struct {
 	BaseURL              string
 	APIKey               string
+	OrgID                string
 	ClusterID            string
 	Query                string
-	Match                []string
-	Time                 int64
 	Start                int64
 	End                  int64
 	Step                 string
-	Timeout              time.Duration
 	RebuildProbeInterval time.Duration
-	VerboseLogs          bool
 }
 
 func loadConfigFromEnv(lookup func(string) (string, bool), now func() time.Time) (cliConfig, error) {
-	baseURL, ok := optionalEnv(lookup, "CLINIC_API_BASE_URL")
-	if !ok {
-		baseURL = defaultBaseURL
-	}
-	apiKey, err := requiredEnv(lookup, "CLINIC_API_KEY")
+	portalInput, portalSet, err := resolvePortalURLInput(lookup)
 	if err != nil {
 		return cliConfig{}, err
 	}
-	clusterID, err := requiredEnv(lookup, "CLINIC_CLUSTER_ID")
+	if !portalSet {
+		return cliConfig{}, fmt.Errorf("CLINIC_PORTAL_URL is required")
+	}
+	baseURL, apiKey, clusterID, err := resolveClinicAccess(lookup, portalInput.info, portalSet, true)
 	if err != nil {
 		return cliConfig{}, err
 	}
 	end := now().Unix()
-	if raw, ok := optionalEnv(lookup, "CLINIC_RANGE_END"); ok {
-		end, err = parseInt64Env("CLINIC_RANGE_END", raw)
-		if err != nil {
-			return cliConfig{}, err
-		}
-	}
 	start := end - int64(defaultRangeWindow/time.Second)
-	if raw, ok := optionalEnv(lookup, "CLINIC_RANGE_START"); ok {
-		start, err = parseInt64Env("CLINIC_RANGE_START", raw)
-		if err != nil {
-			return cliConfig{}, err
-		}
+	if portalInput.rangeEnd > 0 {
+		end = portalInput.rangeEnd
+	}
+	if portalInput.rangeStart > 0 {
+		start = portalInput.rangeStart
+	} else if portalInput.rangeEnd > 0 {
+		start = end - int64(defaultRangeWindow/time.Second)
 	}
 	if end < start {
-		return cliConfig{}, fmt.Errorf("CLINIC_RANGE_END must be greater than or equal to CLINIC_RANGE_START")
-	}
-	timeout := defaultTimeout
-	if raw, ok := optionalEnv(lookup, "CLINIC_TIMEOUT_SEC"); ok {
-		seconds, err := strconv.Atoi(raw)
-		if err != nil || seconds <= 0 {
-			return cliConfig{}, fmt.Errorf("CLINIC_TIMEOUT_SEC must be a positive integer")
-		}
-		timeout = time.Duration(seconds) * time.Second
+		return cliConfig{}, fmt.Errorf("CLINIC_PORTAL_URL query parameter to must be greater than or equal to from")
 	}
 	rebuildProbeInterval := time.Duration(0)
 	if raw, ok := optionalEnv(lookup, "CLINIC_REBUILD_PROBE_INTERVAL"); ok {
@@ -78,28 +62,9 @@ func loadConfigFromEnv(lookup func(string) (string, bool), now func() time.Time)
 		}
 		rebuildProbeInterval = parsed
 	}
-	verboseLogs := false
-	if raw, ok := optionalEnv(lookup, "CLINIC_VERBOSE_LOGS"); ok {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			return cliConfig{}, fmt.Errorf("CLINIC_VERBOSE_LOGS must be true or false")
-		}
-		verboseLogs = parsed
-	}
 	query, ok := optionalEnv(lookup, "CLINIC_METRICS_QUERY")
 	if !ok {
 		query = defaultMetricsQuery
-	}
-	matches, err := optionalMetricMatchers(lookup, "CLINIC_METRICS_MATCH")
-	if err != nil {
-		return cliConfig{}, err
-	}
-	queryTime := end
-	if raw, ok := optionalEnv(lookup, "CLINIC_QUERY_TIME"); ok {
-		queryTime, err = parseInt64Env("CLINIC_QUERY_TIME", raw)
-		if err != nil {
-			return cliConfig{}, err
-		}
 	}
 	step, ok := optionalEnv(lookup, "CLINIC_RANGE_STEP")
 	if !ok {
@@ -108,18 +73,163 @@ func loadConfigFromEnv(lookup func(string) (string, bool), now func() time.Time)
 	return cliConfig{
 		BaseURL:              baseURL,
 		APIKey:               apiKey,
+		OrgID:                portalInput.orgID,
 		ClusterID:            clusterID,
 		Query:                query,
-		Match:                matches,
-		Time:                 queryTime,
 		Start:                start,
 		End:                  end,
 		Step:                 step,
-		Timeout:              timeout,
 		RebuildProbeInterval: rebuildProbeInterval,
-		VerboseLogs:          verboseLogs,
 	}, nil
 }
+
+type portalInput struct {
+	info       clinicapi.PortalURLInfo
+	orgID      string
+	rangeStart int64
+	rangeEnd   int64
+}
+
+func resolveClinicAccess(lookup func(string) (string, bool), portalInfo clinicapi.PortalURLInfo, portalSet bool, requireCluster bool) (baseURL, apiKey, clusterID string, err error) {
+	baseURL, err = resolveClinicBaseURL(lookup, portalInfo, portalSet)
+	if err != nil {
+		return "", "", "", err
+	}
+	apiKey, err = resolveClinicAPIKey(lookup, baseURL)
+	if err != nil {
+		return "", "", "", err
+	}
+	clusterID, err = resolveClinicClusterID(lookup, portalInfo, portalSet, requireCluster)
+	if err != nil {
+		return "", "", "", err
+	}
+	return baseURL, apiKey, clusterID, nil
+}
+
+func resolvePortalURLInput(lookup func(string) (string, bool)) (portalInput, bool, error) {
+	raw, ok := optionalEnv(lookup, "CLINIC_PORTAL_URL")
+	if !ok {
+		return portalInput{}, false, nil
+	}
+	info, err := clinicapi.ParsePortalURL(raw)
+	if err != nil {
+		return portalInput{}, false, fmt.Errorf("CLINIC_PORTAL_URL is invalid: %w", err)
+	}
+	rangeStart, rangeEnd, err := parsePortalURLRange(raw)
+	if err != nil {
+		return portalInput{}, false, fmt.Errorf("CLINIC_PORTAL_URL is invalid: %w", err)
+	}
+	orgID, err := parsePortalURLOrgID(raw)
+	if err != nil {
+		return portalInput{}, false, fmt.Errorf("CLINIC_PORTAL_URL is invalid: %w", err)
+	}
+	if rangeEnd > 0 && rangeStart > 0 && rangeEnd < rangeStart {
+		return portalInput{}, false, fmt.Errorf("CLINIC_PORTAL_URL is invalid: query parameter to must be greater than or equal to from")
+	}
+	return portalInput{
+		info:       info,
+		orgID:      orgID,
+		rangeStart: rangeStart,
+		rangeEnd:   rangeEnd,
+	}, true, nil
+}
+
+func resolveClinicBaseURL(lookup func(string) (string, bool), portalInfo clinicapi.PortalURLInfo, portalSet bool) (string, error) {
+	if portalSet && strings.TrimSpace(portalInfo.BaseURL) != "" {
+		return strings.TrimSpace(portalInfo.BaseURL), nil
+	}
+	return "", fmt.Errorf("CLINIC_PORTAL_URL is required")
+}
+
+func resolveClinicAPIKey(lookup func(string) (string, bool), baseURL string) (string, error) {
+	if clinicBaseURLIsCN(baseURL) {
+		if value, ok := optionalEnv(lookup, "CLINIC_CN_API_KEY"); ok {
+			return value, nil
+		}
+		return "", fmt.Errorf("CLINIC_CN_API_KEY is required")
+	}
+	return requiredEnv(lookup, "CLINIC_API_KEY")
+}
+
+func resolveClinicClusterID(lookup func(string) (string, bool), portalInfo clinicapi.PortalURLInfo, portalSet bool, requireCluster bool) (string, error) {
+	if portalSet && strings.TrimSpace(portalInfo.ClusterID) != "" {
+		return strings.TrimSpace(portalInfo.ClusterID), nil
+	}
+	if !requireCluster {
+		return "", nil
+	}
+	return "", fmt.Errorf("CLINIC_PORTAL_URL is required")
+}
+
+func parsePortalURLRange(raw string) (int64, int64, error) {
+	route, err := parsePortalURLRoute(raw)
+	if err != nil {
+		return 0, 0, err
+	}
+	query := route.Query()
+	rangeStart, err := parseOptionalInt64Query(query, "from")
+	if err != nil {
+		return 0, 0, err
+	}
+	rangeEnd, err := parseOptionalInt64Query(query, "to")
+	if err != nil {
+		return 0, 0, err
+	}
+	return rangeStart, rangeEnd, nil
+}
+
+func parsePortalURLOrgID(raw string) (string, error) {
+	route, err := parsePortalURLRoute(raw)
+	if err != nil {
+		return "", err
+	}
+	segments := strings.Split(strings.Trim(route.Path, "/"), "/")
+	for i := 0; i < len(segments)-1; i++ {
+		if strings.TrimSpace(segments[i]) != "orgs" {
+			continue
+		}
+		value, err := url.PathUnescape(strings.TrimSpace(segments[i+1]))
+		if err != nil {
+			return "", err
+		}
+		if value != "" {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("portal URL must include /orgs/{orgID}")
+}
+
+func parsePortalURLRoute(raw string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, err
+	}
+	if fragment := strings.TrimSpace(parsed.Fragment); fragment != "" {
+		route, err := url.Parse(strings.TrimPrefix(fragment, "#"))
+		if err == nil && strings.TrimSpace(route.Path) != "" {
+			return route, nil
+		}
+	}
+	return parsed, nil
+}
+
+func parseOptionalInt64Query(query url.Values, key string) (int64, error) {
+	raw := strings.TrimSpace(query.Get(key))
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(raw, 10, 64)
+}
+
+func clinicBaseURLIsCN(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return strings.HasSuffix(host, ".cn")
+}
+
 func (cfg cliConfig) resolveHandle(ctx context.Context, client *clinicapi.Client) (*clinicapi.ClusterHandle, error) {
 	return client.Clusters.Resolve(ctx, cfg.ClusterID)
 }
@@ -147,25 +257,6 @@ func parseInt64Env(key, value string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a valid integer", key)
 	}
 	return parsed, nil
-}
-func optionalMetricMatchers(lookup func(string) (string, bool), key string) ([]string, error) {
-	raw, ok := optionalEnv(lookup, key)
-	if !ok {
-		return nil, nil
-	}
-	lines := strings.Split(raw, "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		out = append(out, line)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%s must contain at least one non-empty selector", key)
-	}
-	return out, nil
 }
 
 type parseEnvError struct {

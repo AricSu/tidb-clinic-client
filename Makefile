@@ -1,42 +1,56 @@
 GO ?= go
+CARGO ?= cargo
+PYTHON ?= python3
 BIN_DIR ?= bin
 CLI_NAME ?= clinic-client
 CLI_PKG := ./cmd/clinic-client
+COMPILER_DIR := ./compiler-rs
+COMPILER_MANIFEST := $(COMPILER_DIR)/Cargo.toml
+PORT ?= 8765
 
-.DEFAULT_GOAL := help
+.DEFAULT_GOAL := build
 
-.PHONY: help all fmt test vet build build-cli run-cli clean
+.PHONY: help build fmt test vet check wasm viewer sync-cases clean
 
 help:
 	@printf "Available targets:\n"
-	@printf "  make all        Run fmt, test, vet, and build-cli\n"
+	@printf "  make            Build $(BIN_DIR)/$(CLI_NAME)\n"
+	@printf "  make build      Build $(BIN_DIR)/$(CLI_NAME)\n"
 	@printf "  make fmt        Format Go code\n"
-	@printf "  make test       Run all Go tests\n"
+	@printf "  make test       Run Go tests and compiler-rs cargo tests\n"
 	@printf "  make vet        Run go vet\n"
-	@printf "  make build      Build the public CLI\n"
-	@printf "  make build-cli  Build the public CLI into $(BIN_DIR)/$(CLI_NAME)\n"
-	@printf "  make run-cli    Run clinic-client metrics query-range via go run\n"
+	@printf "  make check      Run fmt, test, vet, and build\n"
+	@printf "  make wasm       Rebuild compiler-rs WASM asset\n"
+	@printf "  make viewer     Start compiler-rs regression viewer\n"
+	@printf "  make sync-cases Regenerate compiler-rs regression cases\n"
 	@printf "  make clean      Remove local build artifacts\n"
 
-all: fmt test vet build-cli
+build:
+	mkdir -p $(BIN_DIR)
+	$(GO) build -o $(BIN_DIR)/$(CLI_NAME) $(CLI_PKG)
 
 fmt:
 	$(GO) fmt ./...
 
 test:
 	$(GO) test ./...
+	$(CARGO) test --manifest-path $(COMPILER_MANIFEST) --workspace
 
 vet:
 	$(GO) vet ./...
 
-build: build-cli
+check: fmt test vet build
 
-build-cli:
-	mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN_DIR)/$(CLI_NAME) $(CLI_PKG)
+wasm:
+	./compiler-rs/bindings/go/build-wasm.sh
 
-run-cli:
-	$(GO) run $(CLI_PKG) metrics query-range
+viewer:
+	$(CARGO) build --manifest-path $(COMPILER_MANIFEST)
+	$(PYTHON) ./compiler-rs/tools/regression_viewer_py/server.py --compiler-bin ./compiler-rs/target/debug/compiler-rs --port $(PORT)
+
+sync-cases:
+	$(CARGO) build --manifest-path $(COMPILER_MANIFEST)
+	$(PYTHON) ./compiler-rs/tools/sync_compiler_cases.py --compiler-bin ./compiler-rs/target/debug/compiler-rs
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(COMPILER_DIR)/target
